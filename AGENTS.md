@@ -45,6 +45,8 @@ The endpoint paths and JSON payload structures must remain stable:
 1. **Safe Native Report Previews**: In `src/components/TaskManager.tsx`, email report summaries are rendered in a safe structured React UI instead of embedding raw HTML in an iframe or DOM.
 2. **HTML Sanitization**: Any raw user data (filenames, email addresses, logs) interpolated into email HTML templates must pass through `escapeHtml()`.
 3. **Rate Limiting & Payload Bounds**: Express must enforce `express.json({ limit: "2mb" })` and the sliding-window rate limiter on `/api/gemini`.
+4. **Authenticated Gemini Boundary**: Every `/api/gemini/*` request must present a Firebase ID token and the Express server must verify it before any server-held Gemini credential is exercised. Client Google OAuth access tokens are not substitutes for Firebase application identity.
+5. **Voice Removal Freeze**: Real-time Voice UI, microphone permission, the live WebSocket server route, and direct `ws` / `@types/ws` dependencies remain removed. Do not reintroduce them without a new authorised requirement and threat review.
 
 ---
 

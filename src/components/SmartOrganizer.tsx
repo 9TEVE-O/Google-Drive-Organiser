@@ -1,3 +1,4 @@
+import { geminiFetch } from "../lib/geminiApi";
 import React, { useState } from "react";
 import { 
   Play, Sparkles, FolderPlus, Compass, ArrowRight, CheckCircle2, 
@@ -212,7 +213,7 @@ export default function SmartOrganizer({
 
       let data: any = null;
       try {
-        const res = await fetch("/api/gemini/analyze", {
+        const res = await geminiFetch("/api/gemini/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ files: filesToSend, rules })
@@ -268,7 +269,7 @@ export default function SmartOrganizer({
 
       let data: any = null;
       try {
-        const res = await fetch("/api/gemini/organize-plan", {
+        const res = await geminiFetch("/api/gemini/organize-plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ files: filesFormatted, folders: existingFolders, rules })

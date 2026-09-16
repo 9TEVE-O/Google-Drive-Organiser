@@ -1,3 +1,4 @@
+import { geminiFetch } from "../lib/geminiApi";
 import React, { useState, useRef, useEffect } from "react";
 import { 
   Bot, 
@@ -124,7 +125,7 @@ export default function GeminiChatbot() {
     try {
       let data: any = null;
       try {
-        const response = await fetch("/api/gemini/chat", {
+        const response = await geminiFetch("/api/gemini/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

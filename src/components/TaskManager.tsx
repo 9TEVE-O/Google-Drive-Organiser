@@ -1,3 +1,4 @@
+import { geminiFetch } from "../lib/geminiApi";
 import React, { useState, useEffect } from "react";
 import { 
   CheckSquare, Calendar, Bell, Send, Trash2, Plus, Clock, 
@@ -230,7 +231,7 @@ export default function TaskManager({
 
       let data: any = null;
       try {
-        const res = await fetch("/api/gemini/compose-report", {
+        const res = await geminiFetch("/api/gemini/compose-report", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
