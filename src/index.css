@@ -1,0 +1,133 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Space Grotesk", sans-serif;
+  
+  --color-primary-50: #eef2ff;
+  --color-primary-100: #e0e7ff;
+  --color-primary-500: #6366f1;
+  --color-primary-600: #4f46e5;
+  --color-primary-700: #4338ca;
+  
+  --color-accent-50: #f0fdf4;
+  --color-accent-500: #22c55e;
+}
+
+/* Dark Mode Universal Filter Technique */
+html.dark {
+  background-color: #0f172a;
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* Ensure background color is crisp black so that invert yields sharp whites and no grey smudges */
+html {
+  background-color: transparent;
+}
+
+/* Re-invert image-like elements and specific components to restore true color */
+html.dark img,
+html.dark video,
+html.dark [data-preserve-color="true"],
+html.dark .data-preserve-color {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #f8fafc;
+  color: #0f172a;
+  margin: 0;
+  padding: 0;
+}
+
+/* Scrollbar tweaks */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Google Sign-In Material Button styles (Official GSI Spec) */
+.gsi-material-button {
+  -moz-user-select: none;
+  -webkit-user-select: none;
+  -ms-user-select: none;
+  -webkit-appearance: none;
+  background-color: WHITE;
+  background-image: none;
+  border: 1px solid #dadce0;
+  -webkit-border-radius: 12px;
+  border-radius: 12px;
+  -webkit-box-sizing: border-box;
+  box-sizing: border-box;
+  color: #3c4043;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  height: 44px;
+  letter-spacing: 0.25px;
+  outline: none;
+  overflow: hidden;
+  padding: 0 16px;
+  position: relative;
+  text-align: center;
+  -webkit-transition: background 150ms, box-shadow 150ms;
+  transition: background 150ms, box-shadow 150ms;
+  vertical-align: middle;
+  white-space: nowrap;
+  width: auto;
+  min-width: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gsi-material-button:hover {
+  background-color: #f7f9fa;
+  border-color: #d2e3fc;
+}
+
+.gsi-material-button .gsi-material-button-icon {
+  height: 22px;
+  margin-right: 12px;
+  min-width: 22px;
+  width: 22px;
+}
+
+.gsi-material-button .gsi-material-button-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.gsi-material-button .gsi-material-button-content-wrapper {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  filter: none;
+  position: relative;
+  width: 100%;
+  justify-content: center;
+}
+
+.gsi-material-button .gsi-material-button-contents {
+  flex-grow: 1;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 14px;
+  text-align: middle;
+  letter-spacing: -0.1px;
+}

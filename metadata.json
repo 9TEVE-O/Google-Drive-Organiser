@@ -1,0 +1,6 @@
+{
+  "name": "Drive Organizer",
+  "description": "An intelligent companion that organizes Google Drive files and folders, tags documents, schedules task notifications, and features multi-role Gemini chat and real-time Live API voice conversations.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
