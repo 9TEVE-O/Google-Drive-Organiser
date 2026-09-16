@@ -49,7 +49,7 @@ jobs:
 
       - name: Verify frozen Voice removal structurally
         run: |
-          ! grep -R --line-number --exclude-dir=node_modules --exclude-dir=dist -E 'VoiceConversation|/api/live|requestFramePermissions.*microphone|createScriptProcessor|WebSocketServer' .
+          ! grep -R --line-number --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.github -E 'VoiceConversation|/api/live|requestFramePermissions.*microphone|createScriptProcessor|WebSocketServer' .
 
       - name: Verify seven retained tabs are present
         run: |
