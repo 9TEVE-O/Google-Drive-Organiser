@@ -41,7 +41,7 @@ The UI is organized into seven main tabs:
 
 ## Tech stack
 
-- React 19
+- React
 - TypeScript
 - Vite
 - Express
@@ -80,6 +80,8 @@ FIREBASE_PROJECT_ID=your_firebase_project_id
 
 Before running locally, make sure the repository's Firebase client configuration file contains the correct web app settings for your Firebase project so browser-based sign-in can succeed.
 
+For local server-side Firebase ID token verification, also provide Firebase Admin application default credentials, such as `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account key file or another environment that supports `applicationDefault()`.
+
 ### Run locally
 
 ```bash
@@ -98,7 +100,7 @@ http://localhost:3000
 
 ```bash
 npm run dev     # start the app locally
-npm run lint    # TypeScript type-check (`tsc --noEmit`)
+npm run lint    # run the repository lint script (currently `tsc --noEmit`)
 npm run build   # build client and bundled server output
 npm run start   # run the production server from dist/server.cjs
 npm run clean   # remove build artifacts
