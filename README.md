@@ -98,13 +98,11 @@ http://localhost:3000
 
 ## Available scripts
 
-```bash
-npm run dev     # start the app locally
-npm run lint    # run the repository lint/type-check script
-npm run build   # build client and bundled server output
-npm run start   # run the production server from dist/server.cjs
-npm run clean   # remove build artifacts
-```
+- `npm run dev`
+- `npm run lint`
+- `npm run build`
+- `npm run start`
+- `npm run clean`
 
 ## API routes
 
