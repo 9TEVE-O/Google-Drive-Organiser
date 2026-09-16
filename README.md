@@ -86,7 +86,7 @@ The project also expects a `firebase-applet-config.json` file in the repository 
 npm run dev
 ```
 
-This starts the full-stack app through `tsx server.ts`.
+This starts the local full-stack development server for the app.
 
 Open:
 
@@ -119,7 +119,7 @@ npm run clean   # remove build artifacts
 ```text
 src/
   components/    UI features
-  lib/           Google API and Gemini client helpers
+  lib/           browser-side Firebase, Google Workspace, and authenticated fetch helpers
   types.ts       shared app contracts
 server.ts        Express server and Gemini endpoints
 ```
