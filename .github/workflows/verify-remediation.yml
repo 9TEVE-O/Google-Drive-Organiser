@@ -1,0 +1,82 @@
+name: Verify remediation
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Production build
+        run: npm run build
+
+      - name: Start production server
+        run: |
+          npm start > /tmp/drive-organiser.log 2>&1 &
+          echo $! > /tmp/drive-organiser.pid
+
+      - name: Verify server health
+        run: |
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/drive-organiser.log
+          exit 1
+
+      - name: Verify Gemini API fails closed without Firebase identity
+        run: |
+          status=$(curl --silent --output /tmp/unauthenticated.json --write-out "%{http_code}" \
+            -X POST http://127.0.0.1:3000/api/gemini/analyze \
+            -H "Content-Type: application/json" \
+            -d '{"files":[{"id":"fixture-1","name":"fixture.txt","mimeType":"text/plain"}]}')
+          test "$status" = "401" || {
+            cat /tmp/unauthenticated.json
+            echo "Expected unauthenticated Gemini request to fail with 401; got $status"
+            exit 1
+          }
+
+      - name: Verify Gemini clients use authenticated transport
+        run: |
+          if grep -R --line-number --exclude-dir=node_modules --exclude-dir=dist 'fetch("/api/gemini/' src; then
+            echo "Found a raw Gemini fetch that bypasses Firebase ID token transport."
+            exit 1
+          fi
+          grep -R --quiet 'geminiFetch("/api/gemini/' src/components
+
+      - name: Verify frozen Voice removal structurally
+        run: |
+          ! grep -R --line-number --exclude-dir=node_modules --exclude-dir=dist -E 'VoiceConversation|/api/live|requestFramePermissions.*microphone|createScriptProcessor|WebSocketServer' server.ts src index.html metadata.json
+          node -e 'const p=require("./package.json"); if (p.dependencies?.ws || p.devDependencies?.["@types/ws"]) process.exit(1)'
+
+      - name: Verify seven retained tabs are present
+        run: |
+          for tab in drive organizer backup tasks reports image_gen chat; do
+            grep -q "setActiveTab(\"$tab\")" src/App.tsx src/components/Header.tsx || {
+              echo "Missing retained tab: $tab"
+              exit 1
+            }
+          done

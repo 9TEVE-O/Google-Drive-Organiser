@@ -4,10 +4,27 @@ import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
+import { applicationDefault, getApps, initializeApp as initializeAdminApp } from "firebase-admin/app";
+import { getAuth as getAdminAuth } from "firebase-admin/auth";
+import firebaseConfig from "./firebase-applet-config.json";
 
 dotenv.config();
 
 const app = express();
+
+const firebaseProjectId = process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId;
+if (!firebaseProjectId) {
+  throw new Error("Firebase project ID is required for server-side ID token verification.");
+}
+
+if (getApps().length === 0) {
+  initializeAdminApp({
+    credential: applicationDefault(),
+    projectId: firebaseProjectId
+  });
+}
+
+const firebaseAdminAuth = getAdminAuth();
 
 // Security Hardening: enforce body size limit
 app.use(express.json({ limit: "2mb" }));
@@ -46,7 +63,38 @@ function apiRateLimiter(req: express.Request, res: express.Response, next: expre
   next();
 }
 
-app.use("/api/gemini", apiRateLimiter);
+async function requireFirebaseAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const authorization = req.get("authorization");
+  if (!authorization || !authorization.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Firebase authentication is required." });
+  }
+
+  const idToken = authorization.slice("Bearer ".length).trim();
+  if (!idToken) {
+    return res.status(401).json({ error: "Firebase authentication is required." });
+  }
+
+  try {
+    const decodedToken = await firebaseAdminAuth.verifyIdToken(idToken);
+    res.locals.firebaseUser = {
+      uid: decodedToken.uid,
+      email: decodedToken.email ?? null
+    };
+    next();
+  } catch (error: any) {
+    console.warn("[Firebase Auth] Rejected ID token:", error?.message || "verification failed");
+    return res.status(401).json({ error: "Firebase authentication is required." });
+  }
+}
+
+// All retained Gemini routes are server-funded content/analysis capabilities.
+// Workspace mutation remains client-side under the user's Google OAuth grant.
+// Any future server route with external side effects requires an additional route-specific authorization gate.
+app.use("/api/gemini", apiRateLimiter, requireFirebaseAuth);
 
 function escapeHtml(str: string): string {
   return str

@@ -1,3 +1,4 @@
+import { geminiFetch } from "../lib/geminiApi";
 import React, { useState, useEffect } from "react";
 import { 
   X, Sparkles, FileText, Calendar, HardDrive, Tag, Folder, 
@@ -114,7 +115,7 @@ export default function FilePreviewModal({
 
         let data: any = null;
         try {
-          const res = await fetch("/api/gemini/file-summary", {
+          const res = await geminiFetch("/api/gemini/file-summary", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -220,7 +221,7 @@ export default function FilePreviewModal({
 
       let data: any = null;
       try {
-        const res = await fetch("/api/gemini/file-summary", {
+        const res = await geminiFetch("/api/gemini/file-summary", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)

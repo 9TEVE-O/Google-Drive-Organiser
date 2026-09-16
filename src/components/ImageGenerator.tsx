@@ -1,3 +1,4 @@
+import { geminiFetch } from "../lib/geminiApi";
 import React, { useState } from "react";
 import { Image as ImageIcon, Sparkles, Smartphone, Monitor, Loader2, Download, CheckCircle2 } from "lucide-react";
 
@@ -13,7 +14,7 @@ export default function ImageGenerator() {
     try {
       let data: any = null;
       try {
-        const res = await fetch("/api/gemini/generate-image", {
+        const res = await geminiFetch("/api/gemini/generate-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ prompt, aspectRatio })
