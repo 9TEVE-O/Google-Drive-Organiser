@@ -56,7 +56,7 @@ The UI is organized into seven main tabs:
 
 ### Prerequisites
 
-- Node.js 20+
+- A current Node.js LTS release
 - npm
 - A Firebase project configured for Google sign-in
 - Google Cloud access for Drive, Tasks, and Gmail APIs
