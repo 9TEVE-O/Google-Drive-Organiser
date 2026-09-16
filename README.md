@@ -78,7 +78,7 @@ APP_URL=http://localhost:3000
 FIREBASE_PROJECT_ID=your_firebase_project_id
 ```
 
-The client loads Firebase web app settings from the repository-root file `firebase-applet-config.json`, which is imported by `src/lib/googleApi.ts`.
+Before running locally, make sure the repository's Firebase client configuration file contains the correct web app settings for your Firebase project so browser-based sign-in can succeed.
 
 ### Run locally
 
