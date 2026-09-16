@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { 
-  Folder, File, FileText, Plus, Search, ArrowLeft, Trash2, Edit3, 
-  ExternalLink, Move, ChevronRight, Filter, PlusCircle, Check, X, ShieldAlert, RefreshCw, Eye
+  Folder, File, FileText, Plus, Search, ArrowLeft, Edit3, 
+  ExternalLink, Move, ChevronRight, Filter, PlusCircle, Check, X, RefreshCw, Eye
 } from "lucide-react";
 import { DriveFile, ActivityLog } from "../types";
 import { 
   createDriveFolder, createDriveTextFile, updateDriveTextFile, 
-  getDriveTextFileContent, moveDriveFile, deleteDriveFile 
+  getDriveTextFileContent, moveDriveFile 
 } from "../lib/googleApi";
 import FilePreviewModal from "./FilePreviewModal";
 
@@ -74,8 +74,6 @@ export default function DriveBrowser({
   const [movingFile, setMovingFile] = useState<DriveFile | null>(null);
   const [isExecutingMove, setIsExecutingMove] = useState(false);
 
-  const [confirmDeleteFile, setConfirmDeleteFile] = useState<DriveFile | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
 
   const [tagInputId, setTagInputId] = useState<string | null>(null);
   const [newTagVal, setNewTagVal] = useState("");
@@ -348,22 +346,6 @@ export default function DriveBrowser({
     }
   };
 
-  // Handle safe file deletion (CRITICAL: Requires explicit user action)
-  const handleDeleteFileAction = async () => {
-    if (!token || !confirmDeleteFile) return;
-    try {
-      setIsDeleting(true);
-      await deleteDriveFile(token, confirmDeleteFile.id);
-      addLog("modify", `Deleted file "${confirmDeleteFile.name}" from Google Drive`, `File ID: ${confirmDeleteFile.id}`);
-      setConfirmDeleteFile(null);
-      await onRefresh();
-    } catch (e: any) {
-      addLog("modify", "Error cleaning up document: " + e.message);
-      console.error("Error cleaning up document:", e);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
 
   // Add tag manually
   const handleAddTag = (fileId: string) => {
@@ -860,13 +842,6 @@ export default function DriveBrowser({
                           >
                             <Move className="h-3.5 w-3.5" />
                           </button>
-                          <button
-                            onClick={() => setConfirmDeleteFile(file)}
-                            className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50 transition"
-                            title="Delete file"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
                         </div>
                       </td>
                     </tr>
@@ -1053,45 +1028,6 @@ export default function DriveBrowser({
         </div>
       )}
 
-      {/* DETAILED CONFIRMATION DIALOG: Destructive Deletions (CRITICAL USER MANDATE FOR MUTATIONS) */}
-      {confirmDeleteFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-rose-100 bg-white p-6 shadow-2xl animate-in zoom-in-95 duration-200">
-            <div className="flex items-center gap-3 text-rose-650 text-rose-600 mb-3">
-              <ShieldAlert className="h-6 w-6 shrink-0" />
-              <h3 className="font-display font-bold text-slate-950 text-lg">Confirm File Deletion</h3>
-            </div>
-            
-            <p className="text-xs text-slate-600 leading-relaxed mb-4">
-              You are about to permanently delete <strong className="text-slate-950">"{confirmDeleteFile.name}"</strong> from your connected Google Drive storage. This action <strong>cannot</strong> be undone.
-            </p>
-
-            <div className="rounded-lg bg-slate-50 p-3 mb-4 border border-slate-100 font-mono text-[10px] space-y-1 text-slate-500">
-              <div>Type: {confirmDeleteFile.mimeType}</div>
-              {confirmDeleteFile.size && <div>Size: {confirmDeleteFile.size}</div>}
-              <div>File ID: {confirmDeleteFile.id}</div>
-            </div>
-
-            <div className="flex justify-end gap-2.5">
-              <button
-                onClick={() => setConfirmDeleteFile(null)}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
-                disabled={isDeleting}
-              >
-                Cancel
-              </button>
-              <button
-                id="btn-confirm-delete"
-                onClick={handleDeleteFileAction}
-                className="rounded-lg bg-rose-600 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-700 transition"
-                disabled={isDeleting}
-              >
-                {isDeleting ? "Deleting..." : "Delete Permanently"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* BULK TAG MODAL */}
       {showBulkTagModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
@@ -1141,7 +1077,6 @@ export default function DriveBrowser({
           metadata={getFileMetadata(previewFile)}
           onStartEdit={handleStartEdit}
           onStartMove={setMovingFile}
-          onStartDelete={setConfirmDeleteFile}
         />
       )}
     </div>

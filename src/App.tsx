@@ -12,14 +12,13 @@ import TaskManager from "./components/TaskManager";
 import Dashboard from "./components/Dashboard";
 import ImageGenerator from "./components/ImageGenerator";
 import GeminiChatbot from "./components/GeminiChatbot";
-import VoiceConversation from "./components/VoiceConversation";
 import Onboarding from "./components/Onboarding";
 import InfoTooltip from "./components/InfoTooltip";
 import { 
   Sparkles, ShieldAlert, Layers, Bell, CheckSquare, HardDrive, Cpu, 
   Settings, FolderKanban, Info, AlertTriangle, ArrowRight, RefreshCw,
   Clock, Laptop, ListTodo, Activity, LogOut, BarChart3, Image as ImageIcon, Sun, Moon,
-  Bot, Radio, Search, X
+  Bot, Search, X, Download, FileCode, Check
 } from "lucide-react";
 
 export default function App() {
@@ -208,6 +207,58 @@ export default function App() {
       details
     };
     setActivities(prev => [item, ...prev]);
+  };
+
+  // Export status feedback for System Action Logging
+  const [exportToast, setExportToast] = useState<string | null>(null);
+
+  // Export System Action Logging history as CSV or JSON
+  const exportActivities = (format: "csv" | "json") => {
+    if (activities.length === 0) return;
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    if (format === "csv") {
+      const headers = ["ID", "Timestamp", "Action Type", "Message", "Details"];
+      const rows = activities.map(a => [
+        `"${(a.id || "").replace(/"/g, '""')}"`,
+        `"${(a.timestamp || "").replace(/"/g, '""')}"`,
+        `"${(a.actionType || "").replace(/"/g, '""')}"`,
+        `"${(a.message || "").replace(/"/g, '""')}"`,
+        `"${(a.details || "").replace(/"/g, '""')}"`
+      ]);
+      const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\r\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `system-action-logging-${dateStr}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setExportToast("CSV exported!");
+    } else {
+      const exportPayload = {
+        exportedAt: new Date().toISOString(),
+        totalLogs: activities.length,
+        logs: activities
+      };
+      const jsonContent = JSON.stringify(exportPayload, null, 2);
+      const blob = new Blob([jsonContent], { type: "application/json;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `system-action-logging-${dateStr}.json`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setExportToast("JSON exported!");
+    }
+
+    setTimeout(() => {
+      setExportToast(null);
+    }, 2500);
   };
 
   // Fire Visual Notifications & sound chimes
@@ -490,24 +541,6 @@ export default function App() {
                     Multi-Turn
                   </span>
                 </button>
-
-                <button
-                  onClick={() => setActiveTab("voice")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "voice"
-                      ? "bg-indigo-50 text-indigo-700 font-semibold"
-                      : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Radio className="h-4 w-4 text-emerald-600" />
-                    <span>Live Voice</span>
-                  </div>
-                  <span className="flex h-2 w-2 relative">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                  </span>
-                </button>
               </nav>
 
               {/* Status Indicator Bento */}
@@ -652,13 +685,6 @@ export default function App() {
                             <InfoTooltip text="Engage in multi-turn conversation with specialized role presets and model selection." />
                           </>
                         )}
-                        {activeTab === "voice" && (
-                          <>
-                            <Radio className="h-5 w-5 text-emerald-600 shrink-0" />
-                            <span>Gemini Live Voice</span>
-                            <InfoTooltip text="Real-time voice conversation powered by gemini-3.1-flash-live-preview." />
-                          </>
-                        )}
                       </h2>
                       <p className="text-xs text-zinc-500 mt-1 first-letter:uppercase">
                         {activeTab === "drive" && "Visualise files stored on connected Google Drive directly."}
@@ -667,8 +693,7 @@ export default function App() {
                         {activeTab === "tasks" && "Set clock alarms and scheduled reminder checks easily."}
                         {activeTab === "reports" && "Visualise key storage activities, track backup coverage over time."}
                         {activeTab === "image_gen" && "Generate perfect-fit images for phone wallpapers or web banners using AI."}
-                        {activeTab === "chat" && "Converse with multi-role Gemini models (gemini-3.5-flash, gemini-3.1-flash-lite, gemini-3.1-pro-preview)."}
-                        {activeTab === "voice" && "Real-time, bidirectional voice streaming using the Live API (gemini-3.1-flash-live-preview)."}
+                        {activeTab === "chat" && "Converse with multi-role Gemini models (gemini-3.8-flash, gemini-3.1-flash-lite, gemini-3.1-pro-preview)."}
                       </p>
                     </div>
 
@@ -783,10 +808,6 @@ export default function App() {
                     {activeTab === "chat" && (
                       <GeminiChatbot />
                     )}
-
-                    {activeTab === "voice" && (
-                      <VoiceConversation />
-                    )}
                   </div>
                 </div>
 
@@ -890,28 +911,67 @@ export default function App() {
                         <Activity className="h-4.5 w-4.5 text-indigo-600" /> System Action Logging
                         <InfoTooltip text="A transparent list of every action the app has performed recently." />
                       </h3>
-                      <span className="text-[9px] bg-zinc-100 text-zinc-600 rounded px-1.5 py-0.5 font-mono">
-                        {activities.length} logs
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {exportToast ? (
+                          <span className="inline-flex items-center gap-1 text-[9px] font-mono font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                            <Check className="h-2.5 w-2.5" /> {exportToast}
+                          </span>
+                        ) : (
+                          <span className="text-[9px] bg-zinc-100 text-zinc-600 rounded px-1.5 py-0.5 font-mono">
+                            {activities.length} logs
+                          </span>
+                        )}
+                        <div className="flex items-center gap-1 border-l border-zinc-200 pl-1.5">
+                          <button
+                            id="btn-export-logs-csv"
+                            onClick={() => exportActivities("csv")}
+                            disabled={activities.length === 0}
+                            title="Export System Action Logging history as CSV file"
+                            aria-label="Export System Action Logging history to CSV"
+                            className="inline-flex items-center gap-1 rounded bg-zinc-100 px-1.5 py-0.5 text-[9px] font-mono font-semibold text-zinc-700 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 border border-zinc-200 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
+                          >
+                            <Download className="h-2.5 w-2.5 text-zinc-500" />
+                            CSV
+                          </button>
+                          <button
+                            id="btn-export-logs-json"
+                            onClick={() => exportActivities("json")}
+                            disabled={activities.length === 0}
+                            title="Export System Action Logging history as JSON file"
+                            aria-label="Export System Action Logging history to JSON"
+                            className="inline-flex items-center gap-1 rounded bg-zinc-100 px-1.5 py-0.5 text-[9px] font-mono font-semibold text-zinc-700 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 border border-zinc-200 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
+                          >
+                            <FileCode className="h-2.5 w-2.5 text-zinc-500" />
+                            JSON
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="flex-1 overflow-y-auto space-y-2 pr-1 font-mono text-[10px] leading-relaxed">
-                      {activities.map((act, actIdx) => (
-                        <div key={`act-${act.id}-${actIdx}`} className="p-2 border border-zinc-150 rounded-xl bg-zinc-50 hover:bg-zinc-100/50 transition duration-155">
-                          <div className="flex justify-between items-center text-[9px] text-zinc-400 mb-1">
-                            <span className="font-semibold text-[8px] uppercase tracking-wider underline text-zinc-600">
-                              [{act.actionType}]
-                            </span>
-                            <span>{act.timestamp}</span>
-                          </div>
-                          <p className="text-zinc-705 text-zinc-700 font-medium font-sans leading-relaxed">{act.message}</p>
-                          {act.details && (
-                            <span className="text-[8px] text-zinc-400 block border-t border-zinc-100 pt-1 mt-1 truncate">
-                              {act.details}
-                            </span>
-                          )}
+                      {activities.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full py-8 text-center text-zinc-400">
+                          <span>No system action events recorded yet.</span>
+                          <span className="text-[9px] text-zinc-300 mt-1">Actions performed across the app will appear here.</span>
                         </div>
-                      ))}
+                      ) : (
+                        activities.map((act, actIdx) => (
+                          <div key={`act-${act.id}-${actIdx}`} className="p-2 border border-zinc-150 rounded-xl bg-zinc-50 hover:bg-zinc-100/50 transition duration-155">
+                            <div className="flex justify-between items-center text-[9px] text-zinc-400 mb-1">
+                              <span className="font-semibold text-[8px] uppercase tracking-wider underline text-zinc-600">
+                                [{act.actionType}]
+                              </span>
+                              <span>{act.timestamp}</span>
+                            </div>
+                            <p className="text-zinc-705 text-zinc-700 font-medium font-sans leading-relaxed">{act.message}</p>
+                            {act.details && (
+                              <span className="text-[8px] text-zinc-400 block border-t border-zinc-100 pt-1 mt-1 truncate">
+                                {act.details}
+                              </span>
+                            )}
+                          </div>
+                        ))
+                      )}
                     </div>
                   </div>
 

@@ -1,6 +1,6 @@
 import React from "react";
 import { User } from "firebase/auth";
-import { HardDrive, LogOut, CheckSquare, Bell, RefreshCw, Layers, Moon, Sun, Bot, Radio, Sparkles } from "lucide-react";
+import { HardDrive, LogOut, CheckSquare, Bell, RefreshCw, Layers, Moon, Sun, Bot, Sparkles } from "lucide-react";
 
 interface HeaderProps {
   user: User | null;
@@ -101,18 +101,6 @@ export default function Header({
             >
               <Bot className="h-4 w-4" />
               <span>AI Chat</span>
-            </button>
-            <button
-              id="nav-btn-voice"
-              onClick={() => setActiveTab("voice")}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                activeTab === "voice"
-                  ? "bg-indigo-50 text-indigo-700 font-semibold"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              <Radio className="h-4 w-4 text-emerald-600" />
-              <span>Live Voice</span>
             </button>
           </nav>
         )}
@@ -257,14 +245,6 @@ export default function Header({
             }`}
           >
             Chat
-          </button>
-          <button
-            onClick={() => setActiveTab("voice")}
-            className={`flex flex-col items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium ${
-              activeTab === "voice" ? "text-indigo-600" : "text-slate-500"
-            }`}
-          >
-            Voice
           </button>
         </div>
       )}

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { 
   X, Sparkles, FileText, Calendar, HardDrive, Tag, Folder, 
   ExternalLink, Copy, Check, RefreshCw, AlertCircle, Eye, 
-  Download, Edit3, Move, Trash2, CheckCircle2, ChevronRight, Layers, ArrowUpRight
+  Download, Edit3, Move, CheckCircle2, ChevronRight, Layers, ArrowUpRight
 } from "lucide-react";
 import { DriveFile } from "../types";
 import { getDriveTextFileContent } from "../lib/googleApi";
@@ -14,7 +14,6 @@ interface FilePreviewModalProps {
   metadata?: { category?: string; tags?: string[]; relevance?: number };
   onStartEdit?: (file: DriveFile) => void;
   onStartMove?: (file: DriveFile) => void;
-  onStartDelete?: (file: DriveFile) => void;
 }
 
 interface AISummaryData {
@@ -32,8 +31,7 @@ export default function FilePreviewModal({
   onClose,
   metadata,
   onStartEdit,
-  onStartMove,
-  onStartDelete
+  onStartMove
 }: FilePreviewModalProps) {
   const [copiedId, setCopiedId] = useState(false);
   const [copiedContent, setCopiedContent] = useState(false);
@@ -656,20 +654,6 @@ export default function FilePreviewModal({
               >
                 <Move className="h-3.5 w-3.5 text-slate-500" />
                 <span>Move</span>
-              </button>
-            )}
-
-            {onStartDelete && (
-              <button
-                id="preview-btn-delete"
-                onClick={() => {
-                  onClose();
-                  onStartDelete(file);
-                }}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition cursor-pointer shadow-2xs"
-              >
-                <Trash2 className="h-3.5 w-3.5 text-rose-600" />
-                <span>Delete</span>
               </button>
             )}
           </div>

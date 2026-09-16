@@ -2,11 +2,12 @@ import React, { useState } from "react";
 import { 
   Play, Sparkles, FolderPlus, Compass, ArrowRight, CheckCircle2, 
   RefreshCw, ListChecks, HelpCircle, HardDrive, Cpu, AlertTriangle, Layers,
-  Zap, FolderTree, ChevronRight, Check, ArrowUpRight, Folder
+  Zap, FolderTree, ChevronRight, Check, ArrowUpRight, Folder, Sliders
 } from "lucide-react";
-import { DriveFile, DriveAnalysisResult, OrganizationReport } from "../types";
+import { DriveFile, DriveAnalysisResult, OrganizationReport, OrganizerRule } from "../types";
 import { createDriveFolder, createNestedDriveFolders, moveDriveFile } from "../lib/googleApi";
 import InfoTooltip from "./InfoTooltip";
+import OrganizerRulesSettings, { DEFAULT_ORGANIZER_RULES } from "./OrganizerRulesSettings";
 
 interface SmartOrganizerProps {
   token: string | null;
@@ -27,6 +28,32 @@ export default function SmartOrganizer({
   setFiles,
   onNavigateToTab
 }: SmartOrganizerProps) {
+  // Custom Keyword Priority Rules State
+  const [rules, setRules] = useState<OrganizerRule[]>(() => {
+    try {
+      const saved = localStorage.getItem("drive_organizer_custom_rules");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {
+      console.warn("Failed to load rules from localStorage:", e);
+    }
+    return DEFAULT_ORGANIZER_RULES;
+  });
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const handleSaveRules = (newRules: OrganizerRule[]) => {
+    setRules(newRules);
+    try {
+      localStorage.setItem("drive_organizer_custom_rules", JSON.stringify(newRules));
+    } catch (e) {
+      console.warn("Failed to save rules to localStorage:", e);
+    }
+    const activeCount = newRules.filter(r => r.enabled !== false).length;
+    addLog("organize", `Updated priority keyword rules (${activeCount} active).`);
+  };
+
   // Analytical flow states
   const [isClassifying, setIsClassifying] = useState(false);
   const [analysisResults, setAnalysisResults] = useState<DriveAnalysisResult[]>([]);
@@ -48,21 +75,45 @@ export default function SmartOrganizer({
   // Client-side fallback helpers if server response is non-JSON or API temporarily unavailable
   const generateClientFallbackPlan = (filesToPlan: { id: string; name: string; mimeType: string }[]): { recommendedNewFolders: string[]; fileMovements: any[] } => {
     const foldersSet = new Set<string>();
+    const activeRules = rules.filter(r => r.enabled !== false && r.keyword?.trim());
+    
+    // Ensure all target folders from active rules are in the set
+    activeRules.forEach(r => {
+      if (r.targetFolder) foldersSet.add(r.targetFolder);
+      else if (r.targetCategory) foldersSet.add(r.targetCategory);
+    });
+
     const movements = filesToPlan.map(f => {
       let dest = "Documents/General";
       const name = (f.name || "").toLowerCase();
       const mime = (f.mimeType || "").toLowerCase();
+      let ruleMatched = false;
+      let reason = "";
 
-      if (name.includes("invoice") || name.includes("tax") || name.includes("budget") || name.includes("receipt") || mime.includes("spreadsheet") || name.endsWith(".csv") || name.endsWith(".xlsx")) {
-        dest = "Work/Financials";
-      } else if (mime.includes("image") || name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".svg") || name.endsWith(".gif")) {
-        dest = "Media/Images";
-      } else if (name.includes("code") || name.endsWith(".ts") || name.endsWith(".js") || name.endsWith(".py") || name.endsWith(".json") || name.endsWith(".html")) {
-        dest = "Projects/Code";
-      } else if (name.includes("archive") || name.includes("old") || name.includes("backup") || name.endsWith(".zip") || name.endsWith(".tar.gz")) {
-        dest = "Archives/2026";
-      } else if (name.includes("work") || name.includes("project") || name.includes("proposal") || name.includes("roadmap")) {
-        dest = "Work/Projects";
+      // Prioritize user-defined keyword rules
+      for (const rule of activeRules) {
+        const kw = rule.keyword.trim().toLowerCase();
+        if (kw && name.includes(kw)) {
+          dest = rule.targetFolder || rule.targetCategory || "Finance";
+          reason = `Prioritized by custom keyword rule: "${rule.keyword}" -> ${dest}.`;
+          ruleMatched = true;
+          break;
+        }
+      }
+
+      if (!ruleMatched) {
+        if (name.includes("invoice") || name.includes("tax") || name.includes("budget") || name.includes("receipt") || mime.includes("spreadsheet") || name.endsWith(".csv") || name.endsWith(".xlsx")) {
+          dest = "Work/Financials";
+        } else if (mime.includes("image") || name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".svg") || name.endsWith(".gif")) {
+          dest = "Media/Images";
+        } else if (name.includes("code") || name.endsWith(".ts") || name.endsWith(".js") || name.endsWith(".py") || name.endsWith(".json") || name.endsWith(".html")) {
+          dest = "Projects/Code";
+        } else if (name.includes("archive") || name.includes("old") || name.includes("backup") || name.endsWith(".zip") || name.endsWith(".tar.gz")) {
+          dest = "Archives/2026";
+        } else if (name.includes("work") || name.includes("project") || name.includes("proposal") || name.includes("roadmap")) {
+          dest = "Work/Projects";
+        }
+        reason = `Shift to nested directory "${dest}" based on file type and semantic classification.`;
       }
 
       foldersSet.add(dest);
@@ -71,7 +122,7 @@ export default function SmartOrganizer({
         fileName: f.name,
         destFolderId: "",
         destFolderName: dest,
-        reason: `Shift to nested directory "${dest}" based on file type and semantic classification.`
+        reason
       };
     });
 
@@ -82,6 +133,8 @@ export default function SmartOrganizer({
   };
 
   const generateClientFallbackAnalysis = (filesToAnalyze: any[]): DriveAnalysisResult[] => {
+    const activeRules = rules.filter(r => r.enabled !== false && r.keyword?.trim());
+
     return filesToAnalyze.map(f => {
       const name = (f.name || "").toLowerCase();
       const mime = (f.mimeType || "").toLowerCase();
@@ -90,31 +143,47 @@ export default function SmartOrganizer({
       let score = 75;
       let reason = "Classified based on document format and naming context.";
 
-      if (name.includes("invoice") || name.includes("tax") || name.includes("budget") || name.includes("receipt") || mime.includes("spreadsheet")) {
-        category = "Financials";
-        tags = ["finance", "receipt", "accounting"];
-        score = 90;
-        reason = "Financial transactional record identified from file taxonomy.";
-      } else if (name.includes("work") || name.includes("project") || name.includes("spec") || name.includes("roadmap")) {
-        category = "Work";
-        tags = ["project", "work", "documentation"];
-        score = 85;
-        reason = "Identified as active team or project resource.";
-      } else if (mime.includes("image") || name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".svg")) {
-        category = "Media";
-        tags = ["image", "media", "visual"];
-        score = 70;
-        reason = "Visual asset suitable for media repository.";
-      } else if (name.includes("contract") || name.includes("agreement") || name.includes("legal")) {
-        category = "Legal";
-        tags = ["legal", "contract", "records"];
-        score = 88;
-        reason = "Formal agreement or contractual document.";
-      } else if (name.includes("old") || name.includes("archive") || name.includes("backup")) {
-        category = "Archives";
-        tags = ["archive", "backup", "historical"];
-        score = 30;
-        reason = "Historical archive candidate for secondary storage.";
+      // Prioritize user-defined keyword rules
+      let ruleMatched = false;
+      for (const rule of activeRules) {
+        const kw = rule.keyword.trim().toLowerCase();
+        if (kw && name.includes(kw)) {
+          category = rule.targetCategory || "Finance";
+          tags = [kw, (rule.targetCategory || "custom").toLowerCase(), "priority-rule"];
+          score = 92;
+          reason = `Prioritized by custom keyword rule: "${rule.keyword}" -> ${category}.`;
+          ruleMatched = true;
+          break;
+        }
+      }
+
+      if (!ruleMatched) {
+        if (name.includes("invoice") || name.includes("tax") || name.includes("budget") || name.includes("receipt") || mime.includes("spreadsheet")) {
+          category = "Financials";
+          tags = ["finance", "receipt", "accounting"];
+          score = 90;
+          reason = "Financial transactional record identified from file taxonomy.";
+        } else if (name.includes("work") || name.includes("project") || name.includes("spec") || name.includes("roadmap")) {
+          category = "Work";
+          tags = ["project", "work", "documentation"];
+          score = 85;
+          reason = "Identified as active team or project resource.";
+        } else if (mime.includes("image") || name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".svg")) {
+          category = "Media";
+          tags = ["image", "media", "visual"];
+          score = 70;
+          reason = "Visual asset suitable for media repository.";
+        } else if (name.includes("contract") || name.includes("agreement") || name.includes("legal")) {
+          category = "Legal";
+          tags = ["legal", "contract", "records"];
+          score = 88;
+          reason = "Formal agreement or contractual document.";
+        } else if (name.includes("old") || name.includes("archive") || name.includes("backup")) {
+          category = "Archives";
+          tags = ["archive", "backup", "historical"];
+          score = 30;
+          reason = "Historical archive candidate for secondary storage.";
+        }
       }
 
       return {
@@ -146,7 +215,7 @@ export default function SmartOrganizer({
         const res = await fetch("/api/gemini/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ files: filesToSend })
+          body: JSON.stringify({ files: filesToSend, rules })
         });
 
         const text = await res.text();
@@ -202,7 +271,7 @@ export default function SmartOrganizer({
         const res = await fetch("/api/gemini/organize-plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ files: filesFormatted, folders: existingFolders })
+          body: JSON.stringify({ files: filesFormatted, folders: existingFolders, rules })
         });
 
         const text = await res.text();
@@ -446,6 +515,20 @@ export default function SmartOrganizer({
               )}
             </button>
 
+            {/* KEYWORD PRIORITY RULES SETTINGS BUTTON */}
+            <button
+              id="btn-organizer-rules-settings"
+              onClick={() => setIsSettingsOpen(true)}
+              className="flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 shadow-2xs transition cursor-pointer"
+              title="Configure custom keyword priority rules (e.g. 'Invoice' -> 'Finance')"
+            >
+              <Sliders className="h-3.5 w-3.5 text-indigo-600" />
+              <span>Keyword Rules</span>
+              <span className="rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-bold px-1.5 py-0.2">
+                {rules.filter(r => r.enabled !== false).length}
+              </span>
+            </button>
+
             <button
               id="btn-generate-plan"
               onClick={() => handleGenerateSortPlan()}
@@ -628,9 +711,17 @@ export default function SmartOrganizer({
                       </div>
 
                       {move.reason && (
-                        <p className="text-[10px] text-slate-500 italic leading-snug">
-                          {move.reason}
-                        </p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="text-[10px] text-slate-500 italic leading-snug">
+                            {move.reason}
+                          </p>
+                          {(move.reason.toLowerCase().includes("rule") || move.reason.toLowerCase().includes("prioritized")) && (
+                            <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded-md">
+                              <Sparkles className="h-2.5 w-2.5 text-indigo-600" />
+                              Rule Prioritized
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
@@ -666,7 +757,7 @@ export default function SmartOrganizer({
                           {item.recommendedCategory}
                         </span>
                         {item.recommendedTags.map((tag, tIdx) => (
-                          <span key={`rec-tag-${tag}-${tIdx}`} className="text-slate-500 text-[9px] font-mono">
+                          <span key={`rec-tag-${tag}-${tIdx}`} className={`text-[9px] font-mono ${tag === 'priority-rule' ? 'text-indigo-700 font-bold bg-indigo-50 px-1 rounded' : 'text-slate-500'}`}>
                             #{tag}
                           </span>
                         ))}
@@ -697,7 +788,7 @@ export default function SmartOrganizer({
             <h4 className="font-semibold text-slate-800 text-xs flex items-center gap-1.5 mb-3">
               <HelpCircle className="h-4 w-4 text-slate-400" /> Dynamic Organisation Schemas
             </h4>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-[11px] leading-relaxed text-slate-500">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 text-[11px] leading-relaxed text-slate-500">
               <div className="space-y-1.5 p-3.5 rounded-xl bg-slate-50 border border-slate-100">
                 <strong className="text-slate-700 font-semibold block text-xs">Active Relevance Rating</strong>
                 Files updated frequently are flagged as high score. Stale archives are weighted lower to suggest moving them to an 'Archives' repository folder.
@@ -706,6 +797,29 @@ export default function SmartOrganizer({
               <div className="space-y-1.5 p-3.5 rounded-xl bg-slate-50 border border-slate-100">
                 <strong className="text-slate-700 font-semibold block text-xs">Automatic Tags Creation</strong>
                 Metadata tags are appended in secondary layouts. Filter easily using the dropdown at top of core Drive Browser tab views.
+              </div>
+
+              {/* Card for Custom Keyword Priority Rules */}
+              <div className="space-y-2 p-3.5 rounded-xl bg-indigo-50/60 border border-indigo-200/80 transition hover:border-indigo-300">
+                <div className="flex items-center justify-between">
+                  <strong className="text-indigo-950 font-semibold block text-xs flex items-center gap-1">
+                    <Sliders className="h-3.5 w-3.5 text-indigo-600" /> Priority Rules
+                  </strong>
+                  <span className="text-[9.5px] font-mono uppercase bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-bold">
+                    {rules.filter(r => r.enabled !== false).length} Active
+                  </span>
+                </div>
+                <p className="text-[11px] text-indigo-900/80">
+                  Custom keywords (e.g., 'Invoice' &rarr; 'Finance') directly dictate AI grouping and folder destinations.
+                </p>
+                <button
+                  id="btn-card-rules-settings"
+                  onClick={() => setIsSettingsOpen(true)}
+                  className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg bg-white border border-indigo-200 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100/60 active:scale-95 transition cursor-pointer shadow-2xs"
+                >
+                  <Sliders className="h-3 w-3 text-indigo-600" />
+                  <span>Configure Rules</span>
+                </button>
               </div>
               
               {/* Card for One-Click Move Execution with direct trigger button */}
@@ -735,6 +849,14 @@ export default function SmartOrganizer({
           </div>
         </div>
       </div>
+
+      {/* Custom Keyword Priority Rules Modal */}
+      <OrganizerRulesSettings
+        rules={rules}
+        onSaveRules={handleSaveRules}
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
     </div>
   );
 }

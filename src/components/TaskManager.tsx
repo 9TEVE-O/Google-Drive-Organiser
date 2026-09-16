@@ -566,14 +566,50 @@ export default function TaskManager({
               <span className="text-slate-400 font-mono">Subject:</span> {composedSubject}
             </div>
 
-            {/* Frame Content display with strict sandboxing to prevent script execution and cross-origin access */}
-            <div className="flex-1 overflow-hidden border border-slate-200 rounded-xl bg-slate-50 h-64 mb-4">
-              <iframe
-                title="Automated Executive Report Preview"
-                sandbox="allow-popups"
-                srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{margin:0;padding:16px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}</style></head><body>${composedHtml}</body></html>`}
-                className="w-full h-full border-0 bg-white rounded-xl"
-              />
+            {/* Structured Report Preview: Safe native presentation without raw HTML embedding */}
+            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-xl bg-slate-50/50 p-4 mb-4 space-y-3 max-h-72">
+              <div className="flex items-center justify-between bg-white p-3 rounded-lg border border-slate-150">
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-mono tracking-wider font-semibold text-indigo-600">Report Status</span>
+                  <p className="text-xs font-semibold text-slate-900">Email Digest Ready for Dispatch</p>
+                </div>
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Formatted
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="bg-white p-3 rounded-lg border border-slate-150">
+                  <span className="text-[10px] text-slate-400 font-mono">Operations Count</span>
+                  <p className="text-sm font-bold text-slate-800">{activities.length} logged</p>
+                </div>
+                <div className="bg-white p-3 rounded-lg border border-slate-150">
+                  <span className="text-[10px] text-slate-400 font-mono">Format</span>
+                  <p className="text-sm font-bold text-slate-800">Responsive HTML Email</p>
+                </div>
+              </div>
+
+              <div className="bg-white p-3 rounded-lg border border-slate-150 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-slate-800">Included Operations Summary</span>
+                  <span className="text-[10px] text-slate-400 font-mono">Latest {Math.min(activities.length, 5)} events</span>
+                </div>
+                <ul className="divide-y divide-slate-100 text-xs text-slate-600">
+                  {activities.slice(0, 5).map((act, i) => (
+                    <li key={act.id || i} className="py-1.5 flex items-center justify-between gap-2">
+                      <span className="truncate text-[11px] text-slate-700">{act.message}</span>
+                      <span className="text-[10px] font-mono text-slate-400 shrink-0">{act.timestamp.split(" ")[1] || act.timestamp}</span>
+                    </li>
+                  ))}
+                  {activities.length === 0 && (
+                    <li className="py-2 text-[11px] text-slate-400 text-center">No recent operations logged.</li>
+                  )}
+                </ul>
+              </div>
+
+              <p className="text-[11px] text-slate-500 bg-indigo-50/60 p-2.5 rounded-lg border border-indigo-100/60 leading-relaxed">
+                The full executive email layout has been generated and will be sent directly to your connected Google account inbox via the Gmail API.
+              </p>
             </div>
 
             {/* Footer controls */}

@@ -24,7 +24,7 @@ const ROLE_PRESETS: ChatRolePreset[] = [
     title: "Drive & Storage Specialist",
     description: "Expert in folder taxonomy, file naming conventions, cloud storage cleanup, and deduplication.",
     iconName: "FolderTree",
-    defaultModel: "gemini-3.5-flash",
+    defaultModel: "gemini-3.8-flash",
     systemInstruction: "You are an elite Google Drive organization and cloud storage specialist. You help users structure nested folder hierarchies, design foolproof file naming schemas (dates, project tags, revisions), identify archiving candidates, and maintain pristine digital storage hygiene. Be direct, well-organized, and provide bulleted solutions."
   },
   {
@@ -48,7 +48,7 @@ const ROLE_PRESETS: ChatRolePreset[] = [
     title: "Productivity & Task Coach",
     description: "Turn file chaos into actionable Google Tasks, deadlines, priorities, and daily review routines.",
     iconName: "CheckSquare",
-    defaultModel: "gemini-3.5-flash",
+    defaultModel: "gemini-3.8-flash",
     systemInstruction: "You are an executive productivity coach. You help the user break down messy projects into actionable Google Tasks, schedule realistic review reminders, prioritize pending documents, and maintain high personal efficiency."
   },
   {
@@ -56,7 +56,7 @@ const ROLE_PRESETS: ChatRolePreset[] = [
     title: "Custom Role",
     description: "Define your own specific system instruction and model configuration.",
     iconName: "Sliders",
-    defaultModel: "gemini-3.5-flash",
+    defaultModel: "gemini-3.8-flash",
     systemInstruction: "You are an adaptable AI assistant for Google Drive and productivity."
   }
 ];
@@ -75,13 +75,13 @@ export default function GeminiChatbot() {
       role: "model",
       content: "Hello! I am your AI Drive Companion powered by Gemini. You can ask me how to organize your folders, suggest file naming standards, write cleanup checklists, or select different specialized AI roles to assist your workflow.",
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      modelUsed: "gemini-3.5-flash"
+      modelUsed: "gemini-3.8-flash"
     }
   ]);
   const [inputText, setInputText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [selectedPresetId, setSelectedPresetId] = useState<string>("drive_expert");
-  const [selectedModel, setSelectedModel] = useState<GeminiChatModel>("gemini-3.5-flash");
+  const [selectedModel, setSelectedModel] = useState<GeminiChatModel>("gemini-3.8-flash");
   const [customInstruction, setCustomInstruction] = useState(ROLE_PRESETS[0].systemInstruction);
   const [showRoleConfig, setShowRoleConfig] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -313,7 +313,7 @@ export default function GeminiChatbot() {
                   onChange={(e) => setSelectedModel(e.target.value as GeminiChatModel)}
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 shadow-2xs focus:border-indigo-500 focus:outline-none"
                 >
-                  <option value="gemini-3.5-flash">gemini-3.5-flash (General Tasks / Default)</option>
+                  <option value="gemini-3.8-flash">gemini-3.8-flash (General Tasks / Default)</option>
                   <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Fast Tasks / Low Latency)</option>
                   <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Complex Tasks / Deep Reasoning)</option>
                 </select>

@@ -326,20 +326,6 @@ export const moveDriveFile = async (token: string, fileId: string, newParentId: 
   }
 };
 
-/**
- * Delete a file or folder permanently from drive (MANDATORY User Confirmation Dialog is handled in UI component)
- */
-export const deleteDriveFile = async (token: string, fileId: string): Promise<void> => {
-  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${token}` }
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err?.error?.message || "Failed to clean up Google Drive file.");
-  }
-};
 
 
 // ---------------------------------------------------------

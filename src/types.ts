@@ -59,6 +59,15 @@ export interface ActivityLog {
   details?: string;
 }
 
+export interface OrganizerRule {
+  id: string;
+  keyword: string;
+  targetCategory: string;
+  targetFolder?: string;
+  priority?: number;
+  enabled?: boolean;
+}
+
 export interface DriveAnalysisResult {
   fileId: string;
   fileName: string;
@@ -83,7 +92,7 @@ export interface ChatMessage {
   modelUsed?: string;
 }
 
-export type GeminiChatModel = 'gemini-3.5-flash' | 'gemini-3.1-flash-lite' | 'gemini-3.1-pro-preview';
+export type GeminiChatModel = 'gemini-3.8-flash' | 'gemini-3.1-flash-lite' | 'gemini-3.1-pro-preview';
 
 export interface ChatRolePreset {
   id: string;
