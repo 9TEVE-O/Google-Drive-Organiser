@@ -41,7 +41,7 @@ The UI is organized into seven main tabs:
 
 ## Tech stack
 
-- React 19
+- React 19.0.1
 - TypeScript
 - Vite
 - Express
@@ -70,7 +70,7 @@ npm install
 
 ### Environment
 
-Copy `.env.example` into `.env` and set:
+Use the existing `.env.example` file as a template for `.env`, then set:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
@@ -98,7 +98,7 @@ http://localhost:3000
 
 ```bash
 npm run dev     # start the app locally
-npm run lint    # TypeScript check
+npm run lint    # TypeScript type-check (`tsc --noEmit`)
 npm run build   # build client and bundled server output
 npm run start   # run the production server from dist/server.cjs
 npm run clean   # remove build artifacts
