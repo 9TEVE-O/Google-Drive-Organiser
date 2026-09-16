@@ -100,7 +100,7 @@ http://localhost:3000
 
 ```bash
 npm run dev     # start the app locally
-npm run lint    # run the repository lint script (currently `tsc --noEmit`)
+npm run lint    # run the repository lint/type-check script
 npm run build   # build client and bundled server output
 npm run start   # run the production server from dist/server.cjs
 npm run clean   # remove build artifacts
