@@ -105,13 +105,6 @@ jobs:
           replacement = marker + '''4. **Authenticated Gemini Boundary**: Every `/api/gemini/*` request must present a Firebase ID token and the Express server must verify it before any server-held Gemini credential is exercised. Client Google OAuth access tokens are not substitutes for Firebase application identity.\n5. **Voice Removal Freeze**: Real-time Voice UI, microphone permission, the live WebSocket server route, and direct `ws` / `@types/ws` dependencies remain removed. Do not reintroduce them without a new authorised requirement and threat review.\n'''
           agents.write_text(agents_text.replace(marker, replacement, 1))
 
-          verify = Path(".github/workflows/verify-remediation.yml")
-          verify_text = verify.read_text()
-          voice_old = '''      - name: Verify frozen Voice removal structurally\n        run: |\n          ! grep -R --line-number --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.github -E 'VoiceConversation|/api/live|requestFramePermissions.*microphone|createScriptProcessor|WebSocketServer' .\n\n'''
-          voice_new = '''      - name: Verify Gemini API fails closed without Firebase identity\n        run: |\n          status=$(curl --silent --output /tmp/unauthenticated.json --write-out "%{http_code}" \\\n            -X POST http://127.0.0.1:3000/api/gemini/analyze \\\n            -H "Content-Type: application/json" \\\n            -d '{"files":[{"id":"fixture-1","name":"fixture.txt","mimeType":"text/plain"}]}')\n          test "$status" = "401" || {\n            cat /tmp/unauthenticated.json\n            echo "Expected unauthenticated Gemini request to fail with 401; got $status"\n            exit 1\n          }\n\n      - name: Verify Gemini clients use authenticated transport\n        run: |\n          if grep -R --line-number --exclude-dir=node_modules --exclude-dir=dist 'fetch("/api/gemini/' src; then\n            echo "Found a raw Gemini fetch that bypasses Firebase ID token transport."\n            exit 1\n          fi\n          grep -R --quiet 'geminiFetch("/api/gemini/' src/components\n\n      - name: Verify frozen Voice removal structurally\n        run: |\n          ! grep -R --line-number --exclude-dir=node_modules --exclude-dir=dist -E 'VoiceConversation|/api/live|requestFramePermissions.*microphone|createScriptProcessor|WebSocketServer' server.ts src index.html metadata.json\n          node -e 'const p=require("./package.json"); if (p.dependencies?.ws || p.devDependencies?.["@types/ws"]) process.exit(1)'\n\n'''
-          if voice_old not in verify_text:
-              raise SystemExit("Verification workflow Voice check anchor not found")
-          verify.write_text(verify_text.replace(voice_old, voice_new, 1))
           PY
 
       - name: Install Firebase Admin and refresh npm lockfile
@@ -131,13 +124,10 @@ jobs:
           git diff --check
           ! grep -R --line-number --exclude-dir=node_modules --exclude-dir=dist 'fetch("/api/gemini/' src
 
-      - name: Remove one-time repair workflow
-        run: rm .github/workflows/apply-authority-repair.yml
-
       - name: Commit bounded repair
         run: |
           git config user.name "9TEVE-O"
           git config user.email "145073848+9TEVE-O@users.noreply.github.com"
-          git add .env.example AGENTS.md package.json package-lock.json bun.lock server.ts src .github/workflows
+          git add .env.example AGENTS.md package.json package-lock.json bun.lock server.ts src
           git commit -m "fix(security): bind Gemini routes to Firebase identity"
           git push origin HEAD:remediation/minimal-safe-build
