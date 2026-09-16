@@ -78,7 +78,7 @@ APP_URL=http://localhost:3000
 FIREBASE_PROJECT_ID=your_firebase_project_id
 ```
 
-The project also expects `/home/runner/work/Google-Drive-Organiser/Google-Drive-Organiser/firebase-applet-config.json` to contain the Firebase web app configuration used by the client.
+The project also expects a `firebase-applet-config.json` file in the repository root containing the Firebase web app configuration used by the client.
 
 ### Run locally
 
@@ -130,4 +130,3 @@ server.ts        Express server and Gemini endpoints
 - Keep Gemini requests behind verified Firebase identity
 - Treat Google OAuth access as browser-session credentials only
 - Preserve payload limits and rate limiting on Gemini routes
-
