@@ -10,6 +10,15 @@ import {
 } from "../lib/googleApi";
 import InfoTooltip from "./InfoTooltip";
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 interface TaskManagerProps {
   token: string | null;
   addLog: (action: 'create' | 'move' | 'modify' | 'organize' | 'backup' | 'task' | 'email', message: string, details?: string) => void;
@@ -245,17 +254,18 @@ export default function TaskManager({
         setShowReportPreview(true);
       } else {
         // Fallback report
+        const safeUser = escapeHtml(userEmail || 'Active User');
         setComposedSubject("Drive Companion: Automated Organization & Task Report");
         setComposedHtml(`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; background: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0;">
           <h2 style="color: #4f46e5; margin-top: 0;">Drive Companion Activity Summary</h2>
-          <p style="font-size: 14px; color: #64748b;">Report for <strong>${userEmail || 'Active User'}</strong></p>
+          <p style="font-size: 14px; color: #64748b;">Report for <strong>${safeUser}</strong></p>
           <div style="background: #f8fafc; border-radius: 12px; padding: 16px; margin: 16px 0; border: 1px solid #e2e8f0;">
             <p style="margin: 0; font-size: 13px; font-weight: 600; color: #334155;">Drive Statistics</p>
             <p style="margin: 4px 0 0 0; font-size: 12px; color: #64748b;">${activities.length} total operations logged.</p>
           </div>
           <h3 style="font-size: 14px; color: #0f172a; margin-top: 20px;">Recent Operations</h3>
           <ul style="font-size: 13px; color: #334155; padding-left: 20px; line-height: 1.6;">
-            ${eventsListText.map(a => `<li>${a}</li>`).join('')}
+            ${eventsListText.map(a => `<li>${escapeHtml(a)}</li>`).join('')}
           </ul>
         </div>`);
         setShowReportPreview(true);
@@ -556,11 +566,13 @@ export default function TaskManager({
               <span className="text-slate-400 font-mono">Subject:</span> {composedSubject}
             </div>
 
-            {/* Frame Content display with sandboxing */}
-            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-xl p-4.5 bg-slate-50 h-64 mb-4">
-              <div 
-                className="bg-white p-5 rounded-lg shadow-sm max-w-full overflow-x-auto text-xs" 
-                dangerouslySetInnerHTML={{ __html: composedHtml }} 
+            {/* Frame Content display with strict sandboxing to prevent script execution and cross-origin access */}
+            <div className="flex-1 overflow-hidden border border-slate-200 rounded-xl bg-slate-50 h-64 mb-4">
+              <iframe
+                title="Automated Executive Report Preview"
+                sandbox="allow-popups"
+                srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body{margin:0;padding:16px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}</style></head><body>${composedHtml}</body></html>`}
+                className="w-full h-full border-0 bg-white rounded-xl"
               />
             </div>
 
