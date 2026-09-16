@@ -70,7 +70,7 @@ npm install
 
 ### Environment
 
-Use the existing `.env.example` file as a template for `.env`, then set:
+Create a `.env` file and set:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
