@@ -78,7 +78,7 @@ APP_URL=http://localhost:3000
 FIREBASE_PROJECT_ID=your_firebase_project_id
 ```
 
-The project also expects a `firebase-applet-config.json` file in the repository root containing the Firebase web app configuration used by the client.
+The client loads Firebase web app settings from the repository-root file `firebase-applet-config.json`, which is imported by `/home/runner/work/Google-Drive-Organiser/Google-Drive-Organiser/src/lib/googleApi.ts`.
 
 ### Run locally
 
