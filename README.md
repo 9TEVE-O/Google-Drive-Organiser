@@ -41,7 +41,7 @@ The UI is organized into seven main tabs:
 
 ## Tech stack
 
-- React 19.0.1
+- React 19
 - TypeScript
 - Vite
 - Express
