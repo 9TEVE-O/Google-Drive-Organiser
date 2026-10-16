@@ -29,7 +29,7 @@ The following core modules and contracts are **FROZEN**. Do not rename, remove, 
 The endpoint paths and JSON payload structures must remain stable:
 1. `GET /api/health`: Health status.
 2. `POST /api/gemini/analyze`: File categorization and metadata analysis with bounded inputs (`<untrusted_drive_items>`).
-3. `POST /api/gemini/organize-plan`: Smart folder layout recommendations (`<untrusted_user_files>`).
+3. `POST /api/gemini/organize-plan`: Deterministic folder taxonomy engine using `ChangePlanSchema` for structural cleanup recommendations.
 4. `POST /api/gemini/compose-report`: Automated executive activity report composition.
 5. `POST /api/gemini/file-summary`: Deep file insight and document preview extraction.
 6. `POST /api/gemini/chat`: Multi-turn conversational chat with role presets.

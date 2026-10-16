@@ -28,80 +28,60 @@ const CATEGORY_DICTIONARIES: { [category: string]: { keywords: string[]; extensi
     keywords: [
       "invoice", "receipt", "billing", "tax", "w2", "1099", "payroll", "budget", "bill",
       "expense", "statement", "accounting", "ledger", "pnl", "financial", "salary",
-      "reimbursement", "vendor", "payment", "bank", "stripe", "quickbooks", "quote"
+      "reimbursement", "vendor", "payment", "bank", "stripe", "quickbooks", "quote", "fee"
     ],
     extensions: ["csv", "tsv", "xlsx", "xls"],
     mimes: ["application/vnd.google-apps.spreadsheet", "text/csv"],
-    targetFolder: "Financials"
+    targetFolder: "Financials & Billing"
   },
-  "Contracts & Legal": {
+  "Legal & Contracts": {
     keywords: [
       "contract", "agreement", "nda", "terms", "privacy", "compliance", "lease",
       "addendum", "settlement", "clause", "copyright", "trademark", "patent", "bylaws",
-      "dpa", "service agreement", "msa", "sow", "amendment", "authorized"
+      "dpa", "service agreement", "msa", "sow", "amendment", "authorized", "statutory", "policy"
     ],
     extensions: ["pdf", "docx", "doc"],
     mimes: ["application/pdf"],
-    targetFolder: "Legal"
+    targetFolder: "Legal & Contracts"
   },
-  "Engineering & Code": {
+  "Project Operations": {
     keywords: [
-      "spec", "architecture", "api", "schema", "git", "docker", "k8s", "database",
-      "query", "technical", "sprint", "bug", "feature", "rfc", "backend", "frontend",
-      "endpoint", "sdk", "deploy", "build", "pipeline", "env", "sql", "migration"
+      "spec", "architecture", "api", "schema", "roadmap", "project", "sprint", "meeting",
+      "minutes", "notes", "checklist", "okr", "plan", "workflow", "agenda", "milestone",
+      "status report", "standup", "deliverable", "tracker", "action item", "technical",
+      "rfc", "backend", "frontend", "pipeline", "migration", "brief", "task"
     ],
-    extensions: ["ts", "tsx", "js", "json", "py", "sh", "yaml", "yml", "sql", "md"],
-    mimes: ["application/json", "text/plain", "text/markdown"],
-    targetFolder: "Engineering"
+    extensions: ["ts", "tsx", "js", "json", "py", "sh", "yaml", "yml", "sql", "md", "doc", "docx", "gdoc"],
+    mimes: ["application/json", "text/plain", "text/markdown", "application/vnd.google-apps.document"],
+    targetFolder: "Project Operations"
   },
-  "Operations & Projects": {
-    keywords: [
-      "roadmap", "project", "sprint", "meeting", "minutes", "notes", "checklist",
-      "okr", "plan", "workflow", "agenda", "milestone", "team", "onboarding",
-      "status report", "standup", "deliverable", "tracker", "action item"
-    ],
-    extensions: ["doc", "docx", "gdoc"],
-    mimes: ["application/vnd.google-apps.document"],
-    targetFolder: "Projects"
-  },
-  "Analytics & Data": {
-    keywords: [
-      "metrics", "performance", "forecast", "kpi", "report", "survey", "analysis",
-      "dataset", "analytics", "churn", "retention", "conversion", "benchmark",
-      "telemetry", "dashboard", "funnel", "summary", "experiment"
-    ],
-    extensions: ["xlsx", "csv", "json"],
-    mimes: ["application/vnd.google-apps.spreadsheet"],
-    targetFolder: "Analytics"
-  },
-  "Media & Assets": {
+  "Marketing & Assets": {
     keywords: [
       "design", "logo", "banner", "photo", "icon", "mockup", "video", "audio",
       "screenshot", "asset", "vector", "brand", "guideline", "poster", "artwork",
-      "avatar", "hero", "graphic", "illustration", "figma"
+      "avatar", "hero", "graphic", "illustration", "figma", "press", "release", "copywriting"
     ],
     extensions: ["png", "jpg", "jpeg", "svg", "webp", "gif", "mp4", "mov", "mp3"],
     mimes: ["image/", "video/", "audio/"],
-    targetFolder: "Media"
+    targetFolder: "Marketing & Assets"
   },
-  "Personal & Records": {
+  "HR & Operations": {
     keywords: [
-      "resume", "cv", "passport", "medical", "insurance", "travel", "flight",
-      "itinerary", "hotel", "personal", "family", "certificate", "license",
-      "id", "vaccine", "vacation", "health", "estate"
+      "resume", "cv", "job", "description", "contractor", "onboarding", "performance",
+      "review", "interview", "handbook", "benefits", "employee", "team", "guide"
     ],
-    extensions: ["pdf", "jpg", "png"],
-    mimes: ["application/pdf", "image/"],
-    targetFolder: "Personal"
+    extensions: ["pdf", "docx", "doc"],
+    mimes: ["application/pdf", "application/vnd.google-apps.document"],
+    targetFolder: "HR & Operations"
   },
   "Archives & Backups": {
     keywords: [
       "archive", "backup", "old", "deprecated", "dump", "historical", "legacy",
-      "2018", "2019", "2020", "2021", "2022", "2023", "bak", "temp", "trash"
+      "2018", "2019", "2020", "2021", "2022", "2023", "bak", "temp", "trash", "zip", "snapshot", "superseded"
     ],
-    extensions: ["zip", "tar", "gz", "bak"],
-    mimes: ["application/zip", "application/x-tar"],
-    targetFolder: "Archives"
+    extensions: ["zip", "tar", "gz", "bak", "rar", "7z"],
+    mimes: ["application/zip", "application/x-tar", "application/gzip"],
+    targetFolder: "Archives & Backups"
   }
 };
 
@@ -120,8 +100,8 @@ export const evaluateFileDecision = (file: DriveFile, rules: OrganizerRule[] = [
     if (rule.enabled === false) continue;
     const kw = rule.keyword?.trim().toLowerCase();
     if (kw && name.includes(kw)) {
-      const category = rule.targetCategory || "Operations & Projects";
-      const targetFolder = category.split("&")[0].trim();
+      const category = rule.targetCategory || "Project Operations";
+      const targetFolder = rule.targetFolder || category;
       const decision: FileDecision = {
         action: `Move to /${targetFolder}`,
         decisionType: "relocate",
@@ -147,7 +127,7 @@ export const evaluateFileDecision = (file: DriveFile, rules: OrganizerRule[] = [
   // 2. Score across built-in semantic dictionaries
   let bestCategory = "";
   let highestScore = 0;
-  let detectedTargetFolder = "General";
+  let detectedTargetFolder = "Project Operations";
   let matchedKeyword = "";
 
   for (const [category, dict] of Object.entries(CATEGORY_DICTIONARIES)) {
@@ -183,24 +163,24 @@ export const evaluateFileDecision = (file: DriveFile, rules: OrganizerRule[] = [
   // 3. Fallback resolution if keyword score is low
   if (!bestCategory || highestScore === 0) {
     if (isFolder) {
-      bestCategory = "Operations & Projects";
-      detectedTargetFolder = "Projects";
+      bestCategory = "Project Operations";
+      detectedTargetFolder = "Project Operations";
       highestScore = 30;
     } else if (mime.includes("spreadsheet") || ext === "csv" || ext === "xlsx") {
-      bestCategory = "Analytics & Data";
-      detectedTargetFolder = "Analytics";
+      bestCategory = "Financials & Billing";
+      detectedTargetFolder = "Financials & Billing";
       highestScore = 40;
     } else if (mime.includes("pdf")) {
-      bestCategory = "Contracts & Legal";
-      detectedTargetFolder = "Legal";
+      bestCategory = "Legal & Contracts";
+      detectedTargetFolder = "Legal & Contracts";
       highestScore = 35;
     } else if (mime.includes("image")) {
-      bestCategory = "Media & Assets";
-      detectedTargetFolder = "Media";
+      bestCategory = "Marketing & Assets";
+      detectedTargetFolder = "Marketing & Assets";
       highestScore = 40;
     } else {
-      bestCategory = "General Documents";
-      detectedTargetFolder = "Documents";
+      bestCategory = "Project Operations";
+      detectedTargetFolder = "Project Operations";
       highestScore = 25;
     }
   }
@@ -217,15 +197,15 @@ export const evaluateFileDecision = (file: DriveFile, rules: OrganizerRule[] = [
     const daysOld = (Date.now() - fileDate.getTime()) / (1000 * 3600 * 24);
     if (daysOld > 180 && !isFolder) {
       decisionType = "archive";
-      detectedTargetFolder = "Archives";
+      detectedTargetFolder = "Archives & Backups";
       action = `Archive Stale Resource (>180d)`;
       urgency = "low";
-      rationale = `Item has had no activity for over 180 days. Recommend cold storage in /Archives to reduce clutter.`;
+      rationale = `Item has had no activity for over 180 days. Recommend cold storage in /Archives & Backups.`;
     }
   }
 
   // High priority for financial, tax, or legal agreements
-  if (bestCategory === "Financials & Billing" || bestCategory === "Contracts & Legal") {
+  if (bestCategory === "Financials & Billing" || bestCategory === "Legal & Contracts") {
     urgency = "high";
     rationale = `High-compliance ${bestCategory} record requires structured indexing in /${detectedTargetFolder}.`;
   }

@@ -3,7 +3,7 @@
 **Schema Version**: `0.9.1`  
 **Application**: Drive Organizer  
 **Active Foundation Status**: `IMPLEMENTATION_READY`  
-**Last Verified Timestamp**: `2026-10-16T20:03:00Z`  
+**Last Verified Timestamp**: `2026-10-16T20:13:00Z`  
 **Environment**: Node.js + Express (Server), React 19 + Vite 6 + Tailwind CSS v4 (Client)  
 **Port / Host Contract**: Dev server on `0.0.0.0:3000`  
 
@@ -14,9 +14,9 @@
 | Subsystem | State | Core Capabilities | Verified Claims |
 | :--- | :--- | :--- | :--- |
 | **Drive Browser** | `VERIFIED` | Folder navigation, search, MIME type filtering, file inspection modal, bulk selection | Fast metadata indexing, clean search debounce, preview modal with zero DOM leakage |
-| **Smart Organizer** | `VERIFIED` | Rule-based sorting, AI suggested reorganization plans (`/api/gemini/organize-plan`) | Untrusted filenames safely bounded, heuristic fallback plan if Gemini throttles |
+| **Smart Organizer** | `VERIFIED` | Deterministic taxonomy engine, rule-based sorting, AI reorganization plans, interactive approval gate (Governed Mutation) | Proposed name standardization, action-based execution (MOVE/RENAME/TRASH), interactive selection and diff view, heuristic fallback plan if Gemini throttles |
 | **Scheduled Backup Jobs**| `VERIFIED` | Automated backup job scheduler, backup history logging, run simulation | Persistent state handling, stable execution logs |
-| **Tasks & Deadlines** | `VERIFIED` | Task extraction from documents, due date alerts, executive email preview | Safe structured React report preview, escaped HTML payload rendering |
+| **Tasks & Deadlines** | `VERIFIED` | Task extraction from documents, due date alerts, automated reminder sync from taxonomy | Safe structured React report preview, escaped HTML payload rendering, cross-subsystem reminder injection from Smart Organizer |
 | **Activity Reports** | `VERIFIED` | Visual analytics charts, executive summary generation (`/api/gemini/compose-report`) | Aggregate statistics visualizer, markdown formatted executive briefs |
 | **AI Assistant (Chat)** | `VERIFIED` | Clean readable chat UI, compressed settings menu, non-blocking reset, AI ideas | Streamlined chat surface, zero technical jargon/model pill clutter, unified options drawer (persona, speed/depth, export, clear), single-row suggestions, mobile-optimized |
 | **Neural Topology & Design**| `VERIFIED` | Generative canvas (`NeuralSynapseCanvas`), ambient glow system, Zero-Pill typography | Real-time 60fps simulation, unboxed metadata, tabular figure alignment |
@@ -27,6 +27,7 @@
 | **Responsive Mobile / Desktop Architecture** | `VERIFIED` | Dedicated phone-friendly mobile app view and expanded desktop power console | Fixed thumb-nav bottom bar on mobile (`Drive`, `Organize`, `Tasks`, `Assistant`, `More`), touch-friendly file list cards, desktop-exclusive 60fps neural topology canvas & custom rule regex editor, zero viewport clutter |
 | **Smart Task Reminders & Scheduled Actions** | `VERIFIED` | Target file/folder linking, automated scheduled actions (folder creation, doc note appends, file relocations), recurring schedules (daily/weekly/monthly/once) | Persistent background clock scheduler, instant test execution trigger, segmented status filters, in-app audio chime & alert banners |
 | **Mandatory Human Email Approval Gate** | `VERIFIED` | Interactive human approval modal (`EmailApprovalModal`) gating all outbound emails | Zero silent background email dispatch, rich structured HTML message inspection, explicit Approve/Decline controls conforming to human approval rule |
+| **Firebase Admin Auth Boundary** | `VERIFIED` | Server-side Firebase ID token verification middleware on all `/api/gemini` routes | Express middleware checks Bearer token against Firebase Admin SDK, blocks unauthenticated callers with HTTP 401 |
 
 ---
 

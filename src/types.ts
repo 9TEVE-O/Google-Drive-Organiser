@@ -170,3 +170,75 @@ export interface EmailApprovalRequest {
   timestamp: string;
 }
 
+export interface ProposedAction {
+  fileId: string;
+  originalName: string;
+  proposedName: string;
+  currentParentId: string;
+  proposedFolderPath: string;
+  actionType: "MOVE" | "RENAME" | "MOVE_AND_RENAME" | "ARCHIVE" | "TRASH_DUPLICATE" | "SKIP";
+  confidence: number;
+  rationale: string;
+}
+
+export interface ProposedReminder {
+  fileId: string;
+  title: string;
+  triggerDate: string;
+  rationale: string;
+}
+
+export interface OrganizationPlan {
+  summary: string;
+  proposedActions: ProposedAction[];
+  proposedReminders?: ProposedReminder[];
+}
+
+export type CanonicalCategory =
+  | "Financials & Billing"
+  | "Legal & Contracts"
+  | "Project Operations"
+  | "Marketing & Assets"
+  | "HR & Operations"
+  | "Archives & Backups";
+
+export type TriageAction = "relocate" | "archive" | "protect" | "consolidate";
+export type TriageUrgency = "high" | "medium" | "low";
+
+export interface TriageDecision {
+  fileId: string;
+  fileName: string;
+  targetCategory: CanonicalCategory;
+  action: TriageAction;
+  confidence: number;
+  urgency: TriageUrgency;
+  rationale: string;
+  size?: string;
+  currentParentId?: string;
+}
+
+export interface TriageSummary {
+  totalAnalyzed: number;
+  relocateCount: number;
+  archiveCount: number;
+  protectCount: number;
+}
+
+export interface TriagePlan {
+  summary: TriageSummary;
+  decisions: TriageDecision[];
+}
+
+export interface UndoSnapshotMove {
+  fileId: string;
+  originalParentId: string;
+  newParentId: string;
+  fileName?: string;
+  targetCategory?: string;
+}
+
+export interface UndoSnapshot {
+  timestamp: string;
+  moves: UndoSnapshotMove[];
+}
+

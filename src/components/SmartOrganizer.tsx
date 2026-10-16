@@ -4,11 +4,16 @@ import {
   Play, Sparkles, FolderPlus, Compass, ArrowRight, CheckCircle2, 
   RefreshCw, ListChecks, HelpCircle, HardDrive, Cpu, AlertTriangle, Layers,
   Zap, FolderTree, ChevronRight, Check, ArrowUpRight, Folder, Sliders,
-  Archive, ShieldAlert, Move
+  Archive, ShieldAlert, Move, Send, Clock, RotateCcw, Undo2, CheckSquare, Square
 } from "lucide-react";
-import { DriveFile, DriveAnalysisResult, OrganizationReport, OrganizerRule } from "../types";
-import { createDriveFolder, createNestedDriveFolders, moveDriveFile } from "../lib/googleApi";
+import { createDriveFolder, createNestedDriveFolders, moveDriveFile, renameDriveFile, trashDriveFile } from "../lib/googleApi";
 import { evaluateFileDecision, getDecisionSystemMetrics } from "../lib/decisionEngine";
+import { 
+  DriveFile, DriveAnalysisResult, OrganizationReport, OrganizerRule, 
+  OrganizationPlan, ProposedAction, SmartTaskReminder,
+  TriageDecision, TriagePlan, UndoSnapshot, UndoSnapshotMove, CanonicalCategory,
+  TriageAction, TriageUrgency
+} from "../types";
 import InfoTooltip from "./InfoTooltip";
 import OrganizerRulesSettings, { DEFAULT_ORGANIZER_RULES } from "./OrganizerRulesSettings";
 
@@ -20,6 +25,7 @@ interface SmartOrganizerProps {
   onAnalysisApplied: (planData: { [key: string]: { category: string; tags: string[]; relevance: number } }) => void;
   setFiles?: React.Dispatch<React.SetStateAction<DriveFile[]>>;
   onNavigateToTab?: (tab: string) => void;
+  onSaveReminders?: (reminders: SmartTaskReminder[]) => void;
 }
 
 export default function SmartOrganizer({
@@ -29,7 +35,8 @@ export default function SmartOrganizer({
   addLog,
   onAnalysisApplied,
   setFiles,
-  onNavigateToTab
+  onNavigateToTab,
+  onSaveReminders
 }: SmartOrganizerProps) {
   // Custom Keyword Priority Rules State
   const [rules, setRules] = useState<OrganizerRule[]>(() => {
@@ -63,7 +70,7 @@ export default function SmartOrganizer({
   
   // Sorting plan flow states
   const [isPlanning, setIsPlanning] = useState(false);
-  const [orgPlan, setOrgPlan] = useState<{ recommendedNewFolders: string[]; fileMovements: any[] } | null>(null);
+  const [orgPlan, setOrgPlan] = useState<OrganizationPlan | null>(null);
 
   // Execution logs
   const [isExecuting, setIsExecuting] = useState(false);
@@ -73,7 +80,42 @@ export default function SmartOrganizer({
     foldersCreated: number;
     filesMoved: number;
     timestamp: string;
+    remindersCreated: number;
   } | null>(null);
+
+  // Selection & Editing state for Governed Mutation (System 2)
+  const [selectedActionIds, setSelectedActionIds] = useState<Set<string>>(new Set());
+  const [selectedReminderIds, setSelectedReminderIds] = useState<Set<string>>(new Set());
+  const [editableActions, setEditableActions] = useState<{ [fileId: string]: ProposedAction }>({});
+  const [editingActionId, setEditingActionId] = useState<string | null>(null);
+
+  // Schema-locked Triage Plan & Staging State (Pipeline Step 2 & 3)
+  const [triagePlan, setTriagePlan] = useState<TriagePlan | null>(null);
+  const [selectedDecisionIds, setSelectedDecisionIds] = useState<Set<string>>(new Set());
+
+  // Pre-Commit Rollback Snapshot & Undo State (Pipeline Step 4)
+  const [undoSnapshot, setUndoSnapshot] = useState<UndoSnapshot | null>(() => {
+    try {
+      const saved = localStorage.getItem("drive_organizer_undo_snapshot");
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [undoBanner, setUndoBanner] = useState<{ message: string; count: number } | null>(null);
+  const [isUndoing, setIsUndoing] = useState(false);
+
+  // Decisions grouped by Target Category for Step A: Grouped Interactive Staging Card
+  const decisionsGroupedByCategory = React.useMemo(() => {
+    if (!triagePlan?.decisions) return {};
+    const groups: { [cat: string]: TriageDecision[] } = {};
+    for (const d of triagePlan.decisions) {
+      const cat = d.targetCategory || "Project Operations";
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(d);
+    }
+    return groups;
+  }, [triagePlan]);
 
   // Dynamic Decision System operational metrics
   const decisionMetrics = React.useMemo(() => {
@@ -141,50 +183,50 @@ export default function SmartOrganizer({
   // Convert all pending decisions into a structured plan and execute directly
   const handleExecuteAllTriageDecisions = async () => {
     if (pendingDecisions.length === 0) return;
-    const foldersSet = new Set<string>();
-    const movements = pendingDecisions.map(f => {
+    const actions: ProposedAction[] = pendingDecisions.map(f => {
       const target = f.decision?.targetFolder || "General";
-      foldersSet.add(target);
       return {
         fileId: f.id,
-        fileName: f.name,
-        destFolderId: "",
-        destFolderName: target,
-        reason: f.decision?.rationale || `Relocate to /${target}`
+        originalName: f.name,
+        proposedName: f.name,
+        currentParentId: f.parents?.[0] || "root",
+        proposedFolderPath: target,
+        actionType: f.decision?.decisionType === "archive" ? "ARCHIVE" : "MOVE",
+        confidence: f.decision?.confidence || 0.8,
+        rationale: f.decision?.rationale || `Relocate to /${target}`
       };
     });
 
-    const triagePlan = {
-      recommendedNewFolders: Array.from(foldersSet),
-      fileMovements: movements
+    const triagePlan: OrganizationPlan = {
+      summary: "Executing bulk triage decisions from the autonomous engine.",
+      proposedActions: actions
     };
 
     await handleExecutePlanAction(triagePlan);
   };
 
   // Client-side fallback helpers if server response is non-JSON or API temporarily unavailable
-  const generateClientFallbackPlan = (filesToPlan: { id: string; name: string; mimeType: string }[]): { recommendedNewFolders: string[]; fileMovements: any[] } => {
-    const foldersSet = new Set<string>();
+  const generateClientFallbackPlan = (filesToPlan: DriveFile[]): { plan: OrganizationPlan; triage: TriagePlan } => {
     const activeRules = rules.filter(r => r.enabled !== false && r.keyword?.trim());
     
-    // Ensure all target folders from active rules are in the set
-    activeRules.forEach(r => {
-      if (r.targetFolder) foldersSet.add(r.targetFolder);
-      else if (r.targetCategory) foldersSet.add(r.targetCategory);
-    });
+    let relocateCount = 0;
+    let archiveCount = 0;
+    let protectCount = 0;
 
-    const movements = filesToPlan.map(f => {
-      let dest = "Documents/General";
+    const decisions: TriageDecision[] = filesToPlan.map(f => {
+      let dest: CanonicalCategory = "Project Operations";
       const name = (f.name || "").toLowerCase();
       const mime = (f.mimeType || "").toLowerCase();
+      let action: TriageAction = "relocate";
+      let urgency: TriageUrgency = "medium";
       let ruleMatched = false;
-      let reason = "";
+      let reason = `Classified into ${dest} based on file taxonomy.`;
 
       // Prioritize user-defined keyword rules
       for (const rule of activeRules) {
         const kw = rule.keyword.trim().toLowerCase();
         if (kw && name.includes(kw)) {
-          dest = rule.targetFolder || rule.targetCategory || "Finance";
+          dest = (rule.targetFolder || rule.targetCategory || "Project Operations") as CanonicalCategory;
           reason = `Prioritized by custom keyword rule: "${rule.keyword}" -> ${dest}.`;
           ruleMatched = true;
           break;
@@ -193,33 +235,72 @@ export default function SmartOrganizer({
 
       if (!ruleMatched) {
         if (name.includes("invoice") || name.includes("tax") || name.includes("budget") || name.includes("receipt") || mime.includes("spreadsheet") || name.endsWith(".csv") || name.endsWith(".xlsx")) {
-          dest = "Work/Financials";
-        } else if (mime.includes("image") || name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".svg") || name.endsWith(".gif")) {
-          dest = "Media/Images";
-        } else if (name.includes("code") || name.endsWith(".ts") || name.endsWith(".js") || name.endsWith(".py") || name.endsWith(".json") || name.endsWith(".html")) {
-          dest = "Projects/Code";
+          dest = "Financials & Billing";
+          urgency = "high";
+          reason = "Financial transactional record identified.";
+        } else if (name.includes("contract") || name.includes("agreement") || name.includes("legal") || name.includes("nda") || name.includes("policy")) {
+          dest = "Legal & Contracts";
+          action = "protect";
+          urgency = "high";
+          reason = "Legal contract flagged for protected review.";
+        } else if (mime.includes("image") || name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".svg") || name.includes("brand") || name.includes("logo")) {
+          dest = "Marketing & Assets";
+          reason = "Brand or media graphic asset.";
+        } else if (name.includes("resume") || name.includes("onboarding") || name.includes("hr")) {
+          dest = "HR & Operations";
+          reason = "HR or personnel documentation.";
         } else if (name.includes("archive") || name.includes("old") || name.includes("backup") || name.endsWith(".zip") || name.endsWith(".tar.gz")) {
-          dest = "Archives/2026";
-        } else if (name.includes("work") || name.includes("project") || name.includes("proposal") || name.includes("roadmap")) {
-          dest = "Work/Projects";
+          dest = "Archives & Backups";
+          action = "archive";
+          urgency = "low";
+          reason = "Compressed archive or legacy backup file.";
         }
-        reason = `Shift to nested directory "${dest}" based on file type and semantic classification.`;
       }
 
-      foldersSet.add(dest);
+      if (action === "relocate") relocateCount++;
+      if (action === "archive") archiveCount++;
+      if (action === "protect") protectCount++;
+
       return {
         fileId: f.id,
         fileName: f.name,
-        destFolderId: "",
-        destFolderName: dest,
-        reason
+        targetCategory: dest,
+        action,
+        confidence: 0.9,
+        urgency,
+        rationale: reason,
+        size: f.size,
+        currentParentId: f.parents?.[0] || "root"
       };
     });
 
-    return {
-      recommendedNewFolders: Array.from(foldersSet),
-      fileMovements: movements
+    const proposedActions: ProposedAction[] = decisions.map(d => ({
+      fileId: d.fileId,
+      originalName: d.fileName,
+      proposedName: d.fileName,
+      currentParentId: d.currentParentId || "root",
+      proposedFolderPath: d.targetCategory,
+      actionType: d.action === "archive" ? "ARCHIVE" : (d.action === "protect" ? "SKIP" : "MOVE"),
+      confidence: d.confidence,
+      rationale: d.rationale
+    }));
+
+    const triage: TriagePlan = {
+      summary: {
+        totalAnalyzed: filesToPlan.length,
+        relocateCount,
+        archiveCount,
+        protectCount
+      },
+      decisions
     };
+
+    const plan: OrganizationPlan = {
+      summary: "Generated rule-based organization plan (client fallback).",
+      proposedActions
+    };
+
+    return { plan, triage };
   };
 
   const generateClientFallbackAnalysis = (filesToAnalyze: any[]): DriveAnalysisResult[] => {
@@ -346,12 +427,21 @@ export default function SmartOrganizer({
     }
   };
 
-  // Generate automated movement layout plan from Gemini (specifies exact directions & nested folders)
-  const handleGenerateSortPlan = async (): Promise<{ recommendedNewFolders: string[]; fileMovements: any[] } | null> => {
+  // Generate automated movement layout plan from Gemini (Pipeline Step 2: Gemini Triage)
+  const handleGenerateSortPlan = async (limitCount = 25): Promise<OrganizationPlan | null> => {
     if (files.length === 0) return null;
     setIsPlanning(true);
     try {
-      const filesFormatted = files.slice(0, 25).map(f => ({ id: f.id, name: f.name, mimeType: f.mimeType }));
+      // Pick unfiled files or candidates bounded by limitCount
+      const candidateFiles = files.filter(f => f.mimeType !== "application/vnd.google-apps.folder");
+      const filesToSend = candidateFiles.length > 0 ? candidateFiles.slice(0, limitCount) : files.slice(0, limitCount);
+      const filesFormatted = filesToSend.map(f => ({ 
+        id: f.id, 
+        name: f.name, 
+        mimeType: f.mimeType, 
+        parents: f.parents,
+        size: f.size 
+      }));
       const existingFolders = files
         .filter(f => f.mimeType === "application/vnd.google-apps.folder")
         .map(f => ({ id: f.id, name: f.name }));
@@ -365,7 +455,7 @@ export default function SmartOrganizer({
         });
 
         const text = await res.text();
-        if (text && (text.startsWith("{") || text.startsWith("["))) {
+        if (text && text.includes("{")) {
           data = JSON.parse(text);
         } else {
           console.warn("API /api/gemini/organize-plan returned non-JSON response:", text.slice(0, 120));
@@ -376,35 +466,348 @@ export default function SmartOrganizer({
 
       if (data && data.success && data.plan) {
         setOrgPlan(data.plan);
-        addLog("organize", "Proposed dynamic Drive Organisation sorted plan", `Recommended ${data.plan.recommendedNewFolders.length} folders with exact directions.`);
+
+        // Extract Schema-Locked Triage Plan (Pipeline Step 2 -> 3)
+        const decisionsArray: TriageDecision[] = Array.isArray(data.plan.decisions)
+          ? data.plan.decisions
+          : (Array.isArray(data.decisions) ? data.decisions : []);
+
+        if (decisionsArray.length > 0) {
+          const triage: TriagePlan = {
+            summary: (data.plan.summary && typeof data.plan.summary === "object") ? data.plan.summary : {
+              totalAnalyzed: decisionsArray.length,
+              relocateCount: decisionsArray.filter(d => d.action === "relocate").length,
+              archiveCount: decisionsArray.filter(d => d.action === "archive").length,
+              protectCount: decisionsArray.filter(d => d.action === "protect").length
+            },
+            decisions: decisionsArray.map(d => ({
+              ...d,
+              size: filesToSend.find(f => f.id === d.fileId)?.size || "Unknown",
+              currentParentId: filesToSend.find(f => f.id === d.fileId)?.parents?.[0] || "root"
+            }))
+          };
+          setTriagePlan(triage);
+          setSelectedDecisionIds(new Set(triage.decisions.map(d => d.fileId)));
+        }
+
+        // Default select all high confidence actions
+        const initialSelected = new Set<string>();
+        (data.plan.proposedActions || []).forEach((a: ProposedAction) => {
+          if (a.actionType !== 'SKIP' && a.confidence >= 0.6) {
+            initialSelected.add(a.fileId);
+          }
+        });
+        setSelectedActionIds(initialSelected);
+
+        const initialReminders = new Set<string>();
+        if (data.plan.proposedReminders) {
+           data.plan.proposedReminders.forEach((r: any, idx: number) => {
+             initialReminders.add(`rem-${r.fileId}-${idx}`);
+           });
+        }
+        setSelectedReminderIds(initialReminders);
+
+        addLog("organize", `Triage plan generated for ${filesToSend.length} files.`, `Bound to 6 canonical categories.`);
         return data.plan;
       }
 
       // Resilient client-side fallback if server returns non-JSON or fails
-      const fallbackPlan = generateClientFallbackPlan(filesFormatted);
-      setOrgPlan(fallbackPlan);
-      addLog("organize", "Proposed dynamic Drive Organisation sorted plan", `Recommended ${fallbackPlan.recommendedNewFolders.length} folders with exact directions.`);
-      return fallbackPlan;
+      const fallbackResult = generateClientFallbackPlan(filesToSend);
+      setOrgPlan(fallbackResult.plan);
+      setTriagePlan(fallbackResult.triage);
+      setSelectedDecisionIds(new Set(fallbackResult.triage.decisions.map(d => d.fileId)));
+      setSelectedActionIds(new Set(fallbackResult.plan.proposedActions.map(a => a.fileId)));
+      addLog("organize", `Proposed deterministic Drive Organisation plan (client fallback)`, fallbackResult.plan.summary);
+      return fallbackResult.plan;
     } catch (e: any) {
       console.warn("Plan generation fallback activated:", e);
-      const fallbackPlan = generateClientFallbackPlan(files.slice(0, 25));
-      setOrgPlan(fallbackPlan);
-      addLog("organize", "Proposed dynamic Drive Organisation sorted plan", `Recommended ${fallbackPlan.recommendedNewFolders.length} folders with exact directions.`);
-      return fallbackPlan;
+      const fallbackResult = generateClientFallbackPlan(files.slice(0, limitCount));
+      setOrgPlan(fallbackResult.plan);
+      setTriagePlan(fallbackResult.triage);
+      setSelectedDecisionIds(new Set(fallbackResult.triage.decisions.map(d => d.fileId)));
+      setSelectedActionIds(new Set(fallbackResult.plan.proposedActions.map(a => a.fileId)));
+      addLog("organize", "Proposed deterministic Drive Organisation plan (error fallback)", fallbackResult.plan.summary);
+      return fallbackResult.plan;
     } finally {
       setIsPlanning(false);
     }
   };
 
-  // One-Click Move Execution:
-  // Plan layouts specify exact directions. Shifting directories performs actual drive transfers inside nested folders seamlessly.
-  const handleExecutePlanAction = async (planToRun?: { recommendedNewFolders: string[]; fileMovements: any[] } | null) => {
-    const targetPlan = planToRun || orgPlan;
-    if (!targetPlan || targetPlan.fileMovements.length === 0) return;
+  // Step 4: Snapshot & Move (Staged Batch Execution with Instant Snapshot Undo)
+  const handleExecuteApprovedMoves = async () => {
+    if (!triagePlan || triagePlan.decisions.length === 0) {
+      if (orgPlan) return handleExecutePlanAction(orgPlan);
+      return;
+    }
+
+    const decisionsToRun = triagePlan.decisions.filter(d => selectedDecisionIds.has(d.fileId));
+    if (decisionsToRun.length === 0) return;
 
     setIsExecuting(true);
     setExecutionLog([]);
-    const totalSteps = targetPlan.recommendedNewFolders.length + targetPlan.fileMovements.length;
+    setExecutedCount({ total: decisionsToRun.length + 6, current: 0 });
+
+    try {
+      let step = 0;
+      const folderIdCache: { [path: string]: string } = {};
+      let localFilesState = [...files];
+
+      // Existing folders mapping
+      localFilesState.forEach(f => {
+        if (f.mimeType === "application/vnd.google-apps.folder") {
+          folderIdCache[f.name] = f.id;
+        }
+      });
+
+      // 1. Resolve canonical destination folders
+      const uniqueCategories: CanonicalCategory[] = Array.from(new Set<CanonicalCategory>(decisionsToRun.map(d => d.targetCategory)));
+      setExecutionLog(prev => [...prev, `[INIT] Preparing ${uniqueCategories.length} canonical destination folders...`]);
+
+      for (const cat of uniqueCategories) {
+        if (!folderIdCache[cat]) {
+          try {
+            if (token) {
+              const created = await createDriveFolder(token, cat, "root");
+              folderIdCache[cat] = created.id;
+            } else {
+              const simId = `folder_${cat.replace(/\s+/g, '_').toLowerCase()}`;
+              folderIdCache[cat] = simId;
+              localFilesState.push({
+                id: simId,
+                name: cat,
+                mimeType: "application/vnd.google-apps.folder",
+                parents: ["root"],
+                createdTime: new Date().toISOString()
+              });
+            }
+            setExecutionLog(prev => [...prev, `[DIR READY] /${cat}`]);
+          } catch (folderErr: any) {
+            console.warn(`Could not create folder "${cat}":`, folderErr);
+            folderIdCache[cat] = "root";
+          }
+        }
+        step++;
+        setExecutedCount(prev => ({ ...prev, current: step }));
+      }
+
+      // Step B: The Pre-Commit Rollback Snapshot
+      const movesForSnapshot: UndoSnapshotMove[] = decisionsToRun.map(d => {
+        const origFile = files.find(f => f.id === d.fileId);
+        return {
+          fileId: d.fileId,
+          fileName: d.fileName || origFile?.name || "file",
+          originalParentId: d.currentParentId || origFile?.parents?.[0] || "root",
+          newParentId: folderIdCache[d.targetCategory] || "root",
+          targetCategory: d.targetCategory
+        };
+      });
+
+      const snapshot: UndoSnapshot = {
+        timestamp: new Date().toISOString(),
+        moves: movesForSnapshot
+      };
+      localStorage.setItem("drive_organizer_undo_snapshot", JSON.stringify(snapshot));
+      setUndoSnapshot(snapshot);
+      setExecutionLog(prev => [...prev, `[SNAPSHOT] Pre-commit undo snapshot recorded for ${movesForSnapshot.length} files.`]);
+
+      // 2. Dispatch file moves
+      let successCount = 0;
+      for (const move of movesForSnapshot) {
+        setExecutionLog(prev => [...prev, `[MOVE] "${move.fileName}" ──> /${move.targetCategory}`]);
+        try {
+          if (token) {
+            await moveDriveFile(token, move.fileId, move.newParentId, move.originalParentId);
+          } else {
+            localFilesState = localFilesState.map(f => {
+              if (f.id === move.fileId) {
+                return {
+                  ...f,
+                  parents: [move.newParentId],
+                  category: move.targetCategory
+                };
+              }
+              return f;
+            });
+          }
+          successCount++;
+        } catch (itemErr: any) {
+          console.warn(`Could not move "${move.fileName}":`, itemErr);
+          setExecutionLog(prev => [...prev, `⚠️ Error moving "${move.fileName}": ${itemErr.message || "Failed"}`]);
+        } finally {
+          step++;
+          setExecutedCount(prev => ({ ...prev, current: step }));
+        }
+      }
+
+      if (!token && setFiles) {
+        setFiles(localFilesState);
+      }
+
+      setExecutionLog(prev => [...prev, `🎉 Staged Batch Completed: Moved ${successCount} files into canonical directories.`]);
+      addLog("organize", `Executed batch triage for ${successCount} files.`, `Pre-commit undo snapshot active.`);
+
+      setLastExecutionStats({
+        foldersCreated: uniqueCategories.length,
+        filesMoved: successCount,
+        timestamp: new Date().toLocaleTimeString(),
+        remindersCreated: 0
+      });
+
+      // Step C: Trigger Floating Undo Banner
+      setUndoBanner({
+        message: `Successfully organised ${successCount} files.`,
+        count: successCount
+      });
+
+      setTriagePlan(null);
+      setOrgPlan(null);
+      await onRefresh();
+    } catch (e: any) {
+      console.error("Batch execution failed:", e);
+      setExecutionLog(prev => [...prev, `❌ Batch Execution Error: ${e.message}`]);
+      addLog("organize", "Batch execution interrupted: " + e.message);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  // Step C: The "Undo Last Batch" Execution
+  const handleUndoLastBatch = async () => {
+    const snapshot = undoSnapshot || (() => {
+      try {
+        const saved = localStorage.getItem("drive_organizer_undo_snapshot");
+        return saved ? JSON.parse(saved) : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    if (!snapshot || !snapshot.moves || snapshot.moves.length === 0) {
+      addLog("organize", "No previous undo snapshot found.");
+      return;
+    }
+
+    setIsUndoing(true);
+    setExecutionLog(prev => [...prev, `[UNDO INIT] Restoring ${snapshot.moves.length} files to original locations...`]);
+    let restored = 0;
+    let localFilesState = [...files];
+
+    try {
+      for (const move of snapshot.moves) {
+        try {
+          if (token) {
+            await moveDriveFile(token, move.fileId, move.originalParentId || "root", move.newParentId);
+          } else {
+            localFilesState = localFilesState.map(f => {
+              if (f.id === move.fileId) {
+                return {
+                  ...f,
+                  parents: [move.originalParentId || "root"]
+                };
+              }
+              return f;
+            });
+          }
+          restored++;
+          setExecutionLog(prev => [...prev, `[RESTORED] "${move.fileName || move.fileId}" returned to original location.`]);
+        } catch (itemErr: any) {
+          console.warn(`Could not restore file ${move.fileId}:`, itemErr);
+          setExecutionLog(prev => [...prev, `⚠️ Restore notice for "${move.fileName || move.fileId}": ${itemErr.message}`]);
+        }
+      }
+
+      if (!token && setFiles) {
+        setFiles(localFilesState);
+      }
+
+      localStorage.removeItem("drive_organizer_undo_snapshot");
+      setUndoSnapshot(null);
+      setUndoBanner({
+        message: `Rollback complete: Restored ${restored} file(s) to original location.`,
+        count: restored
+      });
+      addLog("organize", `Rollback executed: Restored ${restored} files to original locations.`);
+      await onRefresh();
+    } catch (e: any) {
+      console.error("Undo batch failed:", e);
+      addLog("organize", "Undo batch interrupted: " + e.message);
+    } finally {
+      setIsUndoing(false);
+    }
+  };
+
+  // Verification helper: Move 1 test file into Archives & Backups and test UndoSnapshot
+  const handleTestMoveSingleFile = async () => {
+    const fileToTest = files.find(f => f.mimeType !== "application/vnd.google-apps.folder") || files[0];
+    if (!fileToTest) return;
+
+    setIsExecuting(true);
+    try {
+      let archiveFolderId = "root";
+      const existing = files.find(f => f.mimeType === "application/vnd.google-apps.folder" && f.name === "Archives & Backups");
+      if (existing) {
+        archiveFolderId = existing.id;
+      } else if (token) {
+        const created = await createDriveFolder(token, "Archives & Backups", "root");
+        archiveFolderId = created.id;
+      }
+
+      const origParent = fileToTest.parents?.[0] || "root";
+      const testSnapshot: UndoSnapshot = {
+        timestamp: new Date().toISOString(),
+        moves: [{
+          fileId: fileToTest.id,
+          fileName: fileToTest.name,
+          originalParentId: origParent,
+          newParentId: archiveFolderId,
+          targetCategory: "Archives & Backups"
+        }]
+      };
+      localStorage.setItem("drive_organizer_undo_snapshot", JSON.stringify(testSnapshot));
+      setUndoSnapshot(testSnapshot);
+
+      if (token) {
+        await moveDriveFile(token, fileToTest.id, archiveFolderId, origParent);
+      } else if (setFiles) {
+        setFiles(prev => prev.map(f => f.id === fileToTest.id ? { ...f, parents: [archiveFolderId], category: "Archives & Backups" } : f));
+      }
+
+      addLog("move", `Verification Test: Moved "${fileToTest.name}" to /Archives & Backups. Undo snapshot saved.`);
+      setUndoBanner({
+        message: `Test move successful: "${fileToTest.name}" moved to Archives & Backups.`,
+        count: 1
+      });
+      await onRefresh();
+    } catch (err: any) {
+      console.error("Test move error:", err);
+      addLog("move", `Test move error: ${err.message}`);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  // One-Click Move Execution:
+  // Plan layouts specify exact directions. Shifting directories performs actual drive transfers inside nested folders seamlessly.
+  const handleExecutePlanAction = async (planToRun?: OrganizationPlan | null) => {
+    if (triagePlan && triagePlan.decisions.length > 0) {
+      return handleExecuteApprovedMoves();
+    }
+    const targetPlan = planToRun || orgPlan;
+    if (!targetPlan) return;
+
+    const actionsToRun = targetPlan.proposedActions.filter(a => selectedActionIds.has(a.fileId));
+    if (actionsToRun.length === 0 && selectedReminderIds.size === 0) return;
+
+    setIsExecuting(true);
+    setExecutionLog([]);
+    
+    // Derive unique folders to create (only for selected actions)
+    const foldersToResolve = Array.from(new Set<string>(actionsToRun.map(a => {
+      const edited = editableActions[a.fileId];
+      return (edited?.proposedFolderPath || a.proposedFolderPath);
+    }).filter((p): p is string => !!p && p !== "root")));
+    
+    const totalSteps = foldersToResolve.length + actionsToRun.length + selectedReminderIds.size;
     setExecutedCount({ total: totalSteps, current: 0 });
 
     try {
@@ -452,9 +855,9 @@ export default function SmartOrganizer({
       };
 
       // 1. Resolve and create nested folder paths
-      setExecutionLog(prev => [...prev, `[INIT] Starting One-Click Move Execution across ${targetPlan.recommendedNewFolders.length} directory layouts...`]);
+      setExecutionLog(prev => [...prev, `[INIT] Starting Taxonomy Execution for ${targetPlan.proposedActions.length} files...`]);
 
-      for (const folderPath of targetPlan.recommendedNewFolders) {
+      for (const folderPath of foldersToResolve) {
         setExecutionLog(prev => [...prev, `[DIR PREPARE] Resolving directory hierarchy "${folderPath}"...`]);
 
         let resolvedId = "";
@@ -468,10 +871,10 @@ export default function SmartOrganizer({
           }
 
           folderIdCache[folderPath] = resolvedId;
-          setExecutionLog(prev => [...prev, `[DIR CREATED] Ready nested folder "${folderPath}" (ID: ${resolvedId.substring(0, 12)}...).`]);
+          setExecutionLog(prev => [...prev, `[DIR READY] "${folderPath}" (ID: ${resolvedId.substring(0, 12)}...).`]);
         } catch (dirErr: any) {
           console.warn(`Could not prepare folder "${folderPath}":`, dirErr);
-          setExecutionLog(prev => [...prev, `⚠️ Directory notice on "${folderPath}": ${dirErr.message || "Using fallback"}`]);
+          setExecutionLog(prev => [...prev, `⚠️ Directory notice on "${folderPath}": ${dirErr.message || "Using root fallback"}`]);
           folderIdCache[folderPath] = "root";
         } finally {
           step++;
@@ -479,16 +882,46 @@ export default function SmartOrganizer({
         }
       }
 
-      // 2. Perform actual file transfers inside nested folders
-      let movedCount = 0;
-      for (const move of targetPlan.fileMovements) {
-        const destPath = move.destFolderName || "General";
-        setExecutionLog(prev => [...prev, `[TRANSFER] Exact Direction: Shifting "${move.fileName}" into nested directory "${destPath}"...`]);
+      // Pre-Commit Rollback Snapshot: record original parent IDs for all items to move
+      const snapshotMoves: UndoSnapshotMove[] = [];
+      for (const baseAction of actionsToRun) {
+        const action = editableActions[baseAction.fileId] || baseAction;
+        if (action.actionType === "SKIP") continue;
+        const origFile = files.find(f => f.id === action.fileId);
+        const destPath = action.proposedFolderPath || "General";
+        snapshotMoves.push({
+          fileId: action.fileId,
+          fileName: action.originalName || origFile?.name,
+          originalParentId: action.currentParentId || origFile?.parents?.[0] || "root",
+          newParentId: folderIdCache[destPath] || "root",
+          targetCategory: destPath
+        });
+      }
+
+      const snapshot: UndoSnapshot = {
+        timestamp: new Date().toISOString(),
+        moves: snapshotMoves
+      };
+      localStorage.setItem("drive_organizer_undo_snapshot", JSON.stringify(snapshot));
+      setUndoSnapshot(snapshot);
+
+      // 2. Perform actual file actions (MOVE, RENAME, etc.)
+      let successCount = 0;
+      for (const baseAction of actionsToRun) {
+        const action = editableActions[baseAction.fileId] || baseAction;
         
-        let targetId = move.destFolderId;
-        if (!targetId && folderIdCache[destPath]) {
-          targetId = folderIdCache[destPath];
-        } else if (!targetId) {
+        if (action.actionType === "SKIP") {
+          setExecutionLog(prev => [...prev, `[SKIP] "${action.originalName}"`]);
+          step++;
+          setExecutedCount(prev => ({ ...prev, current: step }));
+          continue;
+        }
+
+        const destPath = action.proposedFolderPath || "General";
+        setExecutionLog(prev => [...prev, `[ACTION] ${action.actionType}: "${action.originalName}"...`]);
+        
+        let targetId = folderIdCache[destPath];
+        if (!targetId && destPath !== "root") {
           if (token) {
             targetId = await createNestedDriveFolders(token, destPath, folderIdCache);
           } else {
@@ -497,40 +930,82 @@ export default function SmartOrganizer({
           folderIdCache[destPath] = targetId;
         }
 
-        if (!targetId) {
-          setExecutionLog(prev => [...prev, `⚠️ Directory path missing for "${move.fileName}". Skipping transfer.`]);
-          step++;
-          setExecutedCount(prev => ({ ...prev, current: step }));
-          continue;
-        }
-
-        // Perform actual Drive transfer via API or simulated in local state
         try {
           if (token) {
-            const fileMeta = files.find(f => f.id === move.fileId);
-            const currentParents = fileMeta?.parents?.join(",");
-            await moveDriveFile(token, move.fileId, targetId, currentParents);
+            // Perform actual Drive actions
+            if (action.actionType === "MOVE" || action.actionType === "MOVE_AND_RENAME" || action.actionType === "ARCHIVE") {
+              await moveDriveFile(token, action.fileId, targetId || "root", action.currentParentId);
+            }
+            
+            if (action.actionType === "RENAME" || action.actionType === "MOVE_AND_RENAME") {
+              if (action.proposedName && action.proposedName !== action.originalName) {
+                await renameDriveFile(token, action.fileId, action.proposedName);
+              }
+            }
+
+            if (action.actionType === "TRASH_DUPLICATE") {
+              await trashDriveFile(token, action.fileId);
+            }
           } else {
             // Update local memory state
             localFilesState = localFilesState.map(f => {
-              if (f.id === move.fileId) {
-                return {
-                  ...f,
-                  parents: [targetId],
-                  category: destPath
-                };
+              if (f.id === action.fileId) {
+                let updated = { ...f };
+                if (action.actionType === "MOVE" || action.actionType === "MOVE_AND_RENAME" || action.actionType === "ARCHIVE") {
+                  updated.parents = [targetId || "root"];
+                  updated.category = destPath;
+                }
+                if (action.actionType === "RENAME" || action.actionType === "MOVE_AND_RENAME") {
+                  updated.name = action.proposedName;
+                }
+                return updated;
               }
               return f;
             });
+            if (action.actionType === "TRASH_DUPLICATE") {
+              localFilesState = localFilesState.filter(f => f.id !== action.fileId);
+            }
           }
 
-          movedCount++;
-          setExecutionLog(prev => [...prev, `[SUCCESS] Shifted "${move.fileName}" -> "${destPath}".`]);
+          successCount++;
+          setExecutionLog(prev => [...prev, `[SUCCESS] Finished action for "${action.originalName}".`]);
         } catch (itemErr: any) {
-          console.warn(`Could not transfer file "${move.fileName}":`, itemErr);
-          setExecutionLog(prev => [...prev, `⚠️ Notice on "${move.fileName}": ${itemErr.message || "Could not relocate file"}`]);
+          console.warn(`Could not execute action for "${action.originalName}":`, itemErr);
+          setExecutionLog(prev => [...prev, `⚠️ Notice on "${action.originalName}": ${itemErr.message || "Failed"}`]);
         } finally {
           step++;
+          setExecutedCount(prev => ({ ...prev, current: step }));
+        }
+      }
+
+      // 3. Create selected reminders (System 3)
+      let remindersCreated = 0;
+      if (targetPlan.proposedReminders && onSaveReminders) {
+        const selectedReminders = targetPlan.proposedReminders.filter((_, idx) => 
+          selectedReminderIds.has(`rem-${targetPlan.proposedReminders![idx].fileId}-${idx}`)
+        );
+        
+        if (selectedReminders.length > 0) {
+          setExecutionLog(prev => [...prev, `[TASKS] Syncing ${selectedReminders.length} suggested reminders...`]);
+          const newReminders: SmartTaskReminder[] = selectedReminders.map(r => ({
+            id: "rem_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+            title: r.title,
+            description: r.rationale,
+            triggerDate: r.triggerDate,
+            triggerTime: "09:00",
+            recurrence: 'once',
+            actionType: 'reminder_only',
+            targetFileId: r.fileId,
+            targetFileName: files.find(f => f.id === r.fileId)?.name,
+            notifyInApp: true,
+            notifyEmail: false,
+            status: 'active',
+            createdAt: new Date().toISOString()
+          }));
+          onSaveReminders(newReminders);
+          remindersCreated = newReminders.length;
+          setExecutionLog(prev => [...prev, `[SUCCESS] Created ${remindersCreated} follow-up reminders.`]);
+          step += selectedReminders.length;
           setExecutedCount(prev => ({ ...prev, current: step }));
         }
       }
@@ -540,25 +1015,33 @@ export default function SmartOrganizer({
         setFiles(localFilesState);
       }
 
-      setExecutionLog(prev => [...prev, `🎉 Complete! Seamlessly shifted ${movedCount} files into nested folders.`]);
+      setExecutionLog(prev => [...prev, `🎉 Complete! Executed ${successCount} taxonomy actions.`]);
       addLog(
         "organize", 
-        `One-Click Move Execution shifted ${movedCount} files into nested directories.`,
-        `Created/verified ${targetPlan.recommendedNewFolders.length} folders.`
+        `One-Click Taxonomy Execution finished ${successCount} actions.`,
+        `Resolved ${foldersToResolve.length} folders.`
       );
 
       setLastExecutionStats({
-        foldersCreated: targetPlan.recommendedNewFolders.length,
-        filesMoved: movedCount,
-        timestamp: new Date().toLocaleTimeString()
+        foldersCreated: foldersToResolve.length,
+        filesMoved: successCount,
+        timestamp: new Date().toLocaleTimeString(),
+        remindersCreated
+      });
+
+      // Trigger floating undo banner
+      setUndoBanner({
+        message: `Successfully organised ${successCount} files.`,
+        count: successCount
       });
 
       setOrgPlan(null);
+      setTriagePlan(null);
       await onRefresh();
     } catch (e: any) {
-      setExecutionLog(prev => [...prev, `❌ Move Execution Error: ${e.message}`]);
-      addLog("organize", "One-Click Move interrupted: " + e.message);
-      console.error("One-Click Move interrupted:", e);
+      setExecutionLog(prev => [...prev, `❌ Taxonomy Execution Error: ${e.message}`]);
+      addLog("organize", "One-Click Taxonomy interrupted: " + e.message);
+      console.error("One-Click Taxonomy interrupted:", e);
     } finally {
       setIsExecuting(false);
     }
@@ -566,7 +1049,9 @@ export default function SmartOrganizer({
 
   // Immediate Single-Click trigger: generates layout plan if needed, then immediately executes moves
   const handleOneClickMove = async () => {
-    if (orgPlan) {
+    if (triagePlan) {
+      await handleExecuteApprovedMoves();
+    } else if (orgPlan) {
       await handleExecutePlanAction(orgPlan);
     } else {
       const generated = await handleGenerateSortPlan();
@@ -604,10 +1089,26 @@ export default function SmartOrganizer({
             </span>
           </button>
 
+          {/* Test Batch (5 Files) - Immediate Verification */}
+          <button
+            id="btn-test-5-files"
+            onClick={() => handleGenerateSortPlan(5)}
+            disabled={isPlanning || isExecuting || files.length === 0}
+            className="flex items-center gap-1.5 rounded-lg border border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/70 dark:bg-indigo-950/40 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 disabled:opacity-50 transition cursor-pointer shadow-xs"
+            title="Run deterministic triage on a bounded 5-file test batch"
+          >
+            {isPlanning ? (
+              <RefreshCw className="h-3.5 w-3.5 animate-spin text-indigo-600 dark:text-indigo-400" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+            )}
+            <span>Test Batch (5 Files)</span>
+          </button>
+
           {/* Plan Folder Sort */}
           <button
             id="btn-generate-plan"
-            onClick={() => handleGenerateSortPlan()}
+            onClick={() => handleGenerateSortPlan(25)}
             disabled={isPlanning || isExecuting || files.length === 0}
             className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60 disabled:opacity-50 transition cursor-pointer shadow-xs"
           >
@@ -619,30 +1120,36 @@ export default function SmartOrganizer({
             ) : (
               <>
                 <Compass className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
-                <span>Plan Structure</span>
+                <span>Triage All Files</span>
               </>
             )}
           </button>
 
-          {/* Catalogue Drive */}
+          {/* Verification: Test Move 1 File */}
           <button
-            id="btn-analyze-files"
-            onClick={handleAnalyzeFiles}
-            disabled={isClassifying || files.length === 0}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60 disabled:opacity-50 transition cursor-pointer shadow-xs"
+            id="btn-test-move-1-file"
+            onClick={() => handleTestMoveSingleFile()}
+            disabled={isExecuting || files.length === 0}
+            className="hidden xl:flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60 disabled:opacity-50 transition cursor-pointer shadow-xs"
+            title="Move 1 test file into Archives & Backups to verify instant undo"
           >
-            {isClassifying ? (
-              <>
-                <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-500" />
-                <span>Cataloguing...</span>
-              </>
-            ) : (
-              <>
-                <Cpu className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
-                <span>Catalogue Drive</span>
-              </>
-            )}
+            <FolderPlus className="h-3.5 w-3.5 text-slate-400" />
+            <span>Verify Undo (1 File)</span>
           </button>
+
+          {/* Undo Last Batch Button in Header */}
+          {undoSnapshot && (
+            <button
+              id="btn-header-undo"
+              onClick={handleUndoLastBatch}
+              disabled={isUndoing}
+              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition cursor-pointer shadow-xs"
+              title="Revert previous batch of file moves"
+            >
+              <RotateCcw className={`h-3.5 w-3.5 ${isUndoing ? 'animate-spin' : ''}`} />
+              <span>Undo Last Batch ({undoSnapshot.moves.length})</span>
+            </button>
+          )}
 
           {/* One-Click Move Execution */}
           <button
@@ -670,6 +1177,7 @@ export default function SmartOrganizer({
             )}
           </button>
         </div>
+
       </div>
 
       {/* Completion Success Notification */}
@@ -683,7 +1191,7 @@ export default function SmartOrganizer({
               <h4 className="text-xs font-semibold text-emerald-950 dark:text-emerald-200">Organization Complete</h4>
               <p className="text-[11px] text-emerald-800 dark:text-emerald-300 mt-0.5">
                 Shifted <span className="font-semibold">{lastExecutionStats.filesMoved} files</span> into{" "}
-                <span className="font-semibold">{lastExecutionStats.foldersCreated} nested directories</span> at {lastExecutionStats.timestamp}.
+                <span className="font-semibold">{lastExecutionStats.foldersCreated} nested directories</span>{lastExecutionStats.remindersCreated > 0 ? ` and created ${lastExecutionStats.remindersCreated} reminders` : ''} at {lastExecutionStats.timestamp}.
               </p>
             </div>
           </div>
@@ -698,6 +1206,15 @@ export default function SmartOrganizer({
               <ArrowUpRight className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
             </button>
           )}
+
+          <button
+            id="btn-generate-executive-digest"
+            onClick={() => onNavigateToTab?.("tasks")}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 transition cursor-pointer shadow-xs"
+          >
+            <Send className="h-3.5 w-3.5" />
+            <span>Compose Executive Digest</span>
+          </button>
         </div>
       )}
 
@@ -741,28 +1258,45 @@ export default function SmartOrganizer({
                   <Layers className="h-4 w-4 text-indigo-600 dark:text-indigo-400" /> Plan Layout
                 </span>
                 <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
-                  {orgPlan.fileMovements.length} files targeted for organization
+                  {orgPlan.proposedActions.length} actions proposed for organization
                 </span>
               </div>
               <button
                 id="btn-approve-plan"
                 onClick={() => handleExecutePlanAction(orgPlan)}
-                disabled={isExecuting}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 transition cursor-pointer"
-                title="Execute all movements"
+                disabled={isExecuting || (selectedActionIds.size === 0 && selectedReminderIds.size === 0)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 transition disabled:opacity-50 cursor-pointer"
+                title="Execute selected movements and reminders"
               >
                 <Zap className="h-3.5 w-3.5 fill-white" />
-                <span>Apply Plan</span>
+                <span>Apply Selected ({selectedActionIds.size + selectedReminderIds.size})</span>
               </button>
             </div>
 
             {/* Folder Creations / Nested Hierarchies */}
             <div className="space-y-2">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400 dark:text-slate-500 block">
-                Target Folders ({orgPlan.recommendedNewFolders.length})
-              </span>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400 dark:text-slate-500 block">
+                  Taxonomy Structure
+                </span>
+                <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500 cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={selectedActionIds.size === orgPlan.proposedActions.length} 
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedActionIds(new Set(orgPlan.proposedActions.map(a => a.fileId)));
+                      } else {
+                        setSelectedActionIds(new Set());
+                      }
+                    }}
+                    className="h-3 w-3 rounded border-slate-300"
+                  />
+                  Select All Actions
+                </label>
+              </div>
               <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                {orgPlan.recommendedNewFolders.map((fold, idx) => {
+                {Array.from(new Set<string>(orgPlan.proposedActions.map(a => a.proposedFolderPath).filter((p): p is string => !!p && p !== "root"))).map((fold, idx) => {
                   const parts = fold.split("/").map(s => s.trim());
                   return (
                     <div key={`rec-fold-${fold}-${idx}`} className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg border border-slate-200/60 dark:border-slate-700/60">
@@ -780,59 +1314,123 @@ export default function SmartOrganizer({
                     </div>
                   );
                 })}
-                {orgPlan.recommendedNewFolders.length === 0 && (
-                  <span className="text-slate-400 dark:text-slate-500 italic text-xs block p-2">Using existing directories</span>
-                )}
               </div>
             </div>
 
-            {/* File Movement Directions */}
             <div className="space-y-2">
               <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400 dark:text-slate-500 block pb-1 border-t border-slate-100 dark:border-slate-800 pt-3">
-                File Transfers ({orgPlan.fileMovements.length})
+                Proposed Actions ({orgPlan.proposedActions.length})
               </span>
               <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
-                {orgPlan.fileMovements.map((move: any, idx: number) => {
-                  const targetDir = move.destFolderName || "General";
+                {orgPlan.proposedActions.map((baseAction: ProposedAction, idx: number) => {
+                  const action = editableActions[baseAction.fileId] || baseAction;
+                  const targetDir = action.proposedFolderPath || "General";
                   const dirParts = targetDir.split("/").map((s: string) => s.trim());
+                  const isSelected = selectedActionIds.has(action.fileId);
+                  
                   return (
-                    <div key={`plan-move-${move.fileId || idx}-${idx}`} className="rounded-lg bg-slate-50 dark:bg-slate-800/40 p-3 border border-slate-200/60 dark:border-slate-800 text-xs space-y-1.5">
-                      <div className="font-medium text-slate-900 dark:text-slate-100 truncate">{move.fileName}</div>
-                      
-                      <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400 text-[11px]">
-                        <span className="text-slate-400 shrink-0">Destination:</span>
-                        <ArrowRight className="h-3 w-3 text-indigo-500 shrink-0" />
-                        <div className="inline-flex items-center gap-0.5 font-medium text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">
-                          <Folder className="h-3 w-3 text-indigo-500 dark:text-indigo-400 mr-1 shrink-0" />
-                          {dirParts.map((part: string, pIdx: number) => (
-                            <React.Fragment key={`dir-part-${part}-${pIdx}`}>
-                              {pIdx > 0 && <span className="text-slate-400 mx-0.5">/</span>}
-                              <span className={pIdx === dirParts.length - 1 ? "font-semibold text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-400"}>
-                                {part}
-                              </span>
-                            </React.Fragment>
-                          ))}
-                        </div>
-                      </div>
-
-                      {move.reason && (
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <p className="text-[10px] text-slate-500 dark:text-slate-400 italic leading-snug">
-                            {move.reason}
-                          </p>
-                          {(move.reason.toLowerCase().includes("rule") || move.reason.toLowerCase().includes("prioritized")) && (
-                            <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 px-1.5 py-0.5 rounded">
-                              <Sparkles className="h-2.5 w-2.5 text-indigo-600 dark:text-indigo-400" />
-                              Rule Prioritized
+                    <div key={`plan-move-${action.fileId || idx}-${idx}`} className={`rounded-lg p-3 border transition ${isSelected ? 'bg-slate-50 dark:bg-slate-800/40 border-indigo-200 dark:border-indigo-900/60' : 'bg-slate-50/50 dark:bg-slate-900/20 border-slate-100 dark:border-slate-800 opacity-60'}`}>
+                      <div className="flex items-start gap-2">
+                        <input 
+                          type="checkbox" 
+                          checked={isSelected} 
+                          onChange={(e) => {
+                            const next = new Set(selectedActionIds);
+                            if (e.target.checked) next.add(action.fileId);
+                            else next.delete(action.fileId);
+                            setSelectedActionIds(next);
+                          }}
+                          className="mt-1 h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 shrink-0 cursor-pointer"
+                        />
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-medium text-slate-900 dark:text-slate-100 truncate text-xs">{action.originalName}</div>
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${ action.actionType === 'SKIP' ? 'bg-slate-200 text-slate-600' : action.actionType === 'TRASH_DUPLICATE' ? 'bg-red-100 text-red-600' : 'bg-emerald-100 text-emerald-700' }`}>
+                              {action.actionType}
                             </span>
+                          </div>
+                          
+                          {action.actionType !== 'SKIP' && (
+                            <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400 text-[11px]">
+                              <span className="text-slate-400 shrink-0">Diff:</span>
+                              <div className="flex items-center gap-1 min-w-0">
+                                <span className="line-through opacity-50">{action.originalName}</span>
+                                <ArrowRight className="h-3 w-3 text-indigo-500 shrink-0" />
+                                <span className="font-semibold text-emerald-600 dark:text-emerald-400">{action.proposedName}</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {action.actionType !== 'SKIP' && (
+                            <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400 text-[11px]">
+                              <span className="text-slate-400 shrink-0">To:</span>
+                              <div className="inline-flex items-center gap-0.5 font-medium text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">
+                                <Folder className="h-3 w-3 text-indigo-500 dark:text-indigo-400 mr-1 shrink-0" />
+                                {dirParts.map((part: string, pIdx: number) => (
+                                  <React.Fragment key={`dir-part-${part}-${pIdx}`}>
+                                    {pIdx > 0 && <span className="text-slate-400 mx-0.5">/</span>}
+                                    <span className={pIdx === dirParts.length - 1 ? "font-semibold text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-400"}>
+                                      {part}
+                                    </span>
+                                  </React.Fragment>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {action.rationale && (
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 italic leading-snug">
+                              {action.rationale}
+                            </p>
                           )}
                         </div>
-                      )}
+                      </div>
                     </div>
                   );
                 })}
               </div>
             </div>
+
+            {/* Suggested Reminders (System 3) */}
+            {orgPlan.proposedReminders && orgPlan.proposedReminders.length > 0 && (
+              <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400 dark:text-slate-500 block pb-1">
+                  Suggested Reminders ({orgPlan.proposedReminders.length})
+                </span>
+                <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                  {orgPlan.proposedReminders.map((rem, rIdx) => {
+                    const remId = `rem-${rem.fileId}-${rIdx}`;
+                    const isSelected = selectedReminderIds.has(remId);
+                    return (
+                      <div key={remId} className={`rounded-lg p-3 border transition ${isSelected ? 'bg-indigo-50/50 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-900/40' : 'bg-slate-50/30 dark:bg-slate-900/10 border-slate-100 dark:border-slate-800 opacity-60'}`}>
+                        <div className="flex items-start gap-2">
+                          <input 
+                            type="checkbox" 
+                            checked={isSelected} 
+                            onChange={(e) => {
+                              const next = new Set(selectedReminderIds);
+                              if (e.target.checked) next.add(remId);
+                              else next.delete(remId);
+                              setSelectedReminderIds(next);
+                            }}
+                            className="mt-1 h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 shrink-0 cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0 space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-slate-900 dark:text-slate-100 text-[11px]">{rem.title}</span>
+                              <span className="inline-flex items-center gap-1 rounded bg-amber-50 dark:bg-amber-950/40 px-1.5 py-0.5 text-[9px] text-amber-700 dark:text-amber-300 font-mono">
+                                <Clock className="h-2.5 w-2.5" /> {rem.triggerDate}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 italic">{rem.rationale}</p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

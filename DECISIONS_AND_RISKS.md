@@ -152,6 +152,13 @@ This register tracks all canonical architectural decisions (ADRs) under the expl
 - **Consequences**: Complete fulfillment of the smart reminder and scheduling specification, with strict non-bypassable human oversight for all outbound email communications.
 - **Validation Ref**: `VAL-REM-01`, `VAL-SEC-04`.
 
+### ADR-013: Server-Side Firebase Admin ID Token Verification Boundary
+- **Status**: `ACTIVE`
+- **Context**: As mandated by AGENTS.md § 2.D.4, every `/api/gemini/*` request must present a valid Firebase ID token verified by the Express server before exercising server-held Gemini credentials. The server requires `firebase-admin` to initialize the admin app with `applicationDefault()` and verify ID tokens via `firebaseAdminAuth.verifyIdToken()`.
+- **Decision**: Installed `firebase-admin` into `dependencies` in `package.json` and ensured proper startup configuration in `server.ts` alongside client token passing. Dev server boots cleanly and verifies requests with HTTP 401 on unauthenticated calls and HTTP 200 on healthy probe.
+- **Consequences**: Strict identity perimeter is established on all AI endpoints without breaking build or server startup.
+- **Validation Ref**: `VAL-SEC-05`.
+
 ---
 
 ## 3. Risk Register
@@ -165,3 +172,5 @@ This register tracks all canonical architectural decisions (ADRs) under the expl
 | **RSK-005** | UI freeze on large drive directory listing (1000+ files) | Medium | Medium | Client-side pagination, debounced search filters, memoized filtering | Search latency > 300ms | `MITIGATED` |
 | **RSK-006** | Drive API `Increasing the number of parents is not allowed` on moves | High | Medium | Live parent & ownership check, shortcut creation for shared items, omit deprecated params, per-item try-catch | Error 400 with parent error | `MITIGATED` |
 | **RSK-007** | Passive inventory with unclassified "Unsorted" debt | Medium | Low | Dynamic on-the-fly decision evaluation across all render and export pipelines | Unsorted count > 0 | `MITIGATED` |
+| **RSK-008** | Missing server-side runtime dependency for token verification | High | Low | Formalized dependency in `package.json` (`firebase-admin`) and verified pre-warm lifecycle | `ERR_MODULE_NOT_FOUND` in server logs | `MITIGATED` |
+

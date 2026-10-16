@@ -12,6 +12,7 @@ import {
 } from "../lib/googleApi";
 import InfoTooltip from "./InfoTooltip";
 import ContextualActionToolbar from "./ContextualActionToolbar";
+import EmailApprovalModal from "./EmailApprovalModal";
 
 function escapeHtml(str: string): string {
   return str
@@ -72,6 +73,7 @@ export default function TaskManager({
   const [composedHtml, setComposedHtml] = useState("");
   const [showReportPreview, setShowReportPreview] = useState(false);
   const [isSendingMail, setIsSendingMail] = useState(false);
+  const [localPendingApproval, setLocalPendingApproval] = useState<EmailApprovalRequest | null>(null);
 
   // Fetch Task Lists & tasks on mount
   useEffect(() => {
@@ -278,37 +280,65 @@ export default function TaskManager({
     }
   };
 
-  // Push actual email out to Gmail Send API! (MANDATORY Permission & Human Approval Check)
+  // Push actual email out to Gmail Send API! (MANDATORY Notification & Human Approval Gate)
   const handleSendEmailReportNow = async () => {
     if (!token || !composedHtml || !composedSubject) return;
 
-    // Enforce human approval modal gate
+    const approvalReq: EmailApprovalRequest = {
+      id: "email_appr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      recipientEmail: userEmail,
+      subject: composedSubject,
+      triggerReason: `User requested activity report digest (${activities.length} operations)`,
+      htmlBody: composedHtml,
+      timestamp: new Date().toISOString()
+    };
+
+    // Always send a notification for human approval before sending any emails
+    if (onTriggerNotification) {
+      onTriggerNotification(
+        "Human Approval Required",
+        `Human approval is required before delivering activity report email to ${userEmail}.`
+      );
+    }
+    addLog("email", `Outbound email queued awaiting human approval: "${composedSubject}"`);
+
+    // Enforce human approval modal gate (via parent if provided, or local modal)
     if (onEmailApprovalRequest) {
-      onEmailApprovalRequest({
-        id: "email_appr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-        recipientEmail: userEmail,
-        subject: composedSubject,
-        triggerReason: `User requested activity report digest (${activities.length} operations)`,
-        htmlBody: composedHtml,
-        timestamp: new Date().toISOString()
-      });
+      onEmailApprovalRequest(approvalReq);
       setShowReportPreview(false);
       return;
     }
 
-    const confirmSend = window.confirm(`Confirm permission to deliver automated activity report directly to email address: ${userEmail}?`);
-    if (!confirmSend) return;
+    setLocalPendingApproval(approvalReq);
+    setShowReportPreview(false);
+  };
 
+  const handleLocalApproveEmail = async (req: EmailApprovalRequest) => {
+    if (!token) return;
     setIsSendingMail(true);
     try {
-      await sendGmailReport(token, userEmail, composedSubject, composedHtml);
-      addLog("email", `Delivered automated HTML activity report to ${userEmail}`, `Subject: ${composedSubject}`);
-      setShowReportPreview(false);
+      await sendGmailReport(token, req.recipientEmail, req.subject, req.htmlBody);
+      addLog("email", `Human approved email delivered to ${req.recipientEmail}`, `Subject: ${req.subject}`);
+      if (onTriggerNotification) {
+        onTriggerNotification("Email Delivered", `Successfully delivered report to ${req.recipientEmail}`);
+      }
+      setLocalPendingApproval(null);
     } catch (e: any) {
-       console.error("Error sending email:", e);
+      console.error("Error sending approved email:", e);
+      if (onTriggerNotification) {
+        onTriggerNotification("Email Delivery Failed", e?.message || "Failed to deliver email through Gmail API.");
+      }
     } finally {
-       setIsSendingMail(false);
+      setIsSendingMail(false);
     }
+  };
+
+  const handleLocalDeclineEmail = (req: EmailApprovalRequest) => {
+    addLog("email", `Email delivery declined by user: "${req.subject}"`, "Notification kept in-app only.");
+    if (onTriggerNotification) {
+      onTriggerNotification("Email Delivery Cancelled", "The notification was kept in-app only.");
+    }
+    setLocalPendingApproval(null);
   };
 
   return (
@@ -792,6 +822,14 @@ export default function TaskManager({
           </div>
         </div>
       )}
+
+      {/* Local Human Email Approval Security Gate */}
+      <EmailApprovalModal
+        request={localPendingApproval}
+        onApprove={handleLocalApproveEmail}
+        onDecline={handleLocalDeclineEmail}
+        isSending={isSendingMail}
+      />
     </div>
   );
 }

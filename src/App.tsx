@@ -136,8 +136,8 @@ export default function App() {
   // Injected Smart classification results from Gemini organization core
   const [filesInPlan, setFilesInPlan] = useState<{ [key: string]: { category: string; tags: string[]; relevance: number } }>({});
 
-  // Generative Neural Topology view toggle
-  const [showNeuralTopology, setShowNeuralTopology] = useState<boolean>(true);
+  // Generative Neural Topology view toggle - DISABLED
+  const [showNeuralTopology, setShowNeuralTopology] = useState<boolean>(false);
 
   // Chatbot external trigger synchronization
   const [chatClearTrigger, setChatClearTrigger] = useState(0);
@@ -577,7 +577,9 @@ export default function App() {
       `Scheduled smart reminder: "${newReminder.title}"`,
       `Scheduled: ${newReminder.triggerDate} ${newReminder.triggerTime} (${newReminder.recurrence})`
     );
-    if (newReminder.notifyInApp) {
+    if (newReminder.notifyEmail) {
+      triggerNotification("Human Approval Policy Active", `"${newReminder.title}" scheduled. A notification for human approval will be sent before any email is dispatched.`);
+    } else if (newReminder.notifyInApp) {
       triggerNotification("Reminder Scheduled", `"${newReminder.title}" scheduled for ${newReminder.triggerDate} at ${newReminder.triggerTime}`);
     }
   };
@@ -633,7 +635,7 @@ export default function App() {
           timestamp: new Date().toISOString()
         };
         setPendingEmailApproval(approvalReq);
-        triggerNotification("Email Approval Required", `Approval requested to deliver completion notification for "${reminder.title}".`);
+        triggerNotification("Human Approval Required", `Approval requested before sending email for: "${reminder.title}".`);
         addLog("email", `Email notification awaiting human approval for: "${reminder.title}"`);
       }
 
@@ -716,7 +718,7 @@ export default function App() {
                 timestamp: new Date().toISOString()
               };
               setPendingEmailApproval(approvalReq);
-              triggerNotification("Email Approval Required", `Approval requested before sending email for: "${rem.title}".`);
+              triggerNotification("Human Approval Required", `Approval requested before sending email for: "${rem.title}".`);
               addLog("email", `Email notification awaiting human approval for: "${rem.title}"`);
             }
 
@@ -962,7 +964,7 @@ export default function App() {
                   </span>
                 </button>
 
-                <button
+                {/* <button
                   id="sidebar-nav-sheets"
                   onClick={() => setActiveTab("sheets")}
                   className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
@@ -980,7 +982,7 @@ export default function App() {
                   }`}>
                     {files.filter(f => f.mimeType === "application/vnd.google-apps.spreadsheet" || f.name.endsWith(".csv")).length}
                   </span>
-                </button>
+                </button> */}
 
                 <button
                   id="sidebar-nav-organizer"
@@ -1000,7 +1002,7 @@ export default function App() {
                   )}
                 </button>
 
-                <button
+                {/* <button
                   id="sidebar-nav-backup"
                   onClick={() => setActiveTab("backup")}
                   className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
@@ -1018,9 +1020,9 @@ export default function App() {
                   }`}>
                     {backupJobs.length}
                   </span>
-                </button>
+                </button> */}
 
-                <button
+                {/* <button
                   id="sidebar-nav-tasks"
                   onClick={() => setActiveTab("tasks")}
                   className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
@@ -1038,7 +1040,7 @@ export default function App() {
                       {reminders.filter(r => r.status === 'active').length}
                     </span>
                   )}
-                </button>
+                </button> */}
 
                 <button
                   id="sidebar-nav-reports"
@@ -1055,7 +1057,7 @@ export default function App() {
                   </div>
                 </button>
 
-                <button
+                {/* <button
                   id="sidebar-nav-chat"
                   onClick={() => setActiveTab("chat")}
                   className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
@@ -1068,7 +1070,7 @@ export default function App() {
                     <Bot className={`h-4 w-4 ${activeTab === "chat" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
                     <span>Gemini Assistant</span>
                   </div>
-                </button>
+                </button> */}
               </nav>
             </div>
 
@@ -1215,11 +1217,11 @@ export default function App() {
                       transition={{ duration: 0.22, ease: "easeInOut" }}
                       className="hidden md:block"
                     >
-                      <NeuralSynapseCanvas 
+                    {/* <NeuralSynapseCanvas 
                         files={files} 
                         isSyncing={isSyncing} 
                         filesInPlan={filesInPlan} 
-                      />
+                      /> */}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -1248,14 +1250,14 @@ export default function App() {
                       />
                     )}
 
-                    {activeTab === "sheets" && (
+                    {/* {activeTab === "sheets" && (
                       <SheetsManager 
                         token={token} 
                         files={files} 
                         onRefreshDrive={handleManualRefresh} 
                         addLog={addLog}
                       />
-                    )}
+                    )} */}
 
                     {activeTab === "organizer" && (
                       <SmartOrganizer 
@@ -1266,10 +1268,11 @@ export default function App() {
                         onAnalysisApplied={(plan) => setFilesInPlan({ ...filesInPlan, ...plan })}
                         setFiles={setFiles}
                         onNavigateToTab={setActiveTab}
+                        onSaveReminders={(newRems) => setReminders(prev => [...newRems, ...prev])}
                       />
                     )}
 
-                    {activeTab === "backup" && (
+                    {/* {activeTab === "backup" && (
                       <BackupManager 
                         token={token} 
                         files={files} 
@@ -1280,9 +1283,9 @@ export default function App() {
                         backupHistory={backupHistory}
                         setBackupHistory={setBackupHistory}
                       />
-                    )}
+                    )} */}
 
-                    {activeTab === "tasks" && (
+                    {/* {activeTab === "tasks" && (
                       <TaskManager 
                         token={token} 
                         addLog={addLog} 
@@ -1296,7 +1299,7 @@ export default function App() {
                         onExecuteReminderAction={handleExecuteReminderAction}
                         onEmailApprovalRequest={(req) => setPendingEmailApproval(req)}
                       />
-                    )}
+                    )} */}
 
                     {activeTab === "reports" && (
                       <Dashboard 
@@ -1306,13 +1309,13 @@ export default function App() {
                       />
                     )}
 
-                    {activeTab === "chat" && (
+                    {/* {activeTab === "chat" && (
                       <GeminiChatbot 
                         files={files}
                         clearTrigger={chatClearTrigger}
                         exportTrigger={chatExportTrigger}
                       />
-                    )}
+                    )} */}
                   </motion.div>
                 </AnimatePresence>
 
@@ -1357,49 +1360,16 @@ export default function App() {
 
               <button
                 type="button"
-                id="mobile-nav-tasks"
-                onClick={() => { setActiveTab("tasks"); setIsMobileMoreOpen(false); }}
-                className={`relative flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
-                  activeTab === "tasks"
-                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
-                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
-                }`}
-              >
-                <ListTodo className="h-5 w-5" />
-                <span className="text-[10px] mt-0.5">Tasks</span>
-                {reminders.filter(r => r.status === 'active').length > 0 && (
-                  <span className="absolute top-1 right-2.5 h-4 w-4 rounded-full bg-indigo-600 text-white text-[9px] font-mono flex items-center justify-center ring-2 ring-white dark:ring-slate-900 font-bold">
-                    {reminders.filter(r => r.status === 'active').length}
-                  </span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                id="mobile-nav-chat"
-                onClick={() => { setActiveTab("chat"); setIsMobileMoreOpen(false); }}
+                id="mobile-nav-reports"
+                onClick={() => { setActiveTab("reports"); setIsMobileMoreOpen(false); }}
                 className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
-                  activeTab === "chat"
+                  activeTab === "reports"
                     ? "text-indigo-600 dark:text-indigo-400 font-semibold"
                     : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
                 }`}
               >
-                <Bot className="h-5 w-5" />
-                <span className="text-[10px] mt-0.5">Assistant</span>
-              </button>
-
-              <button
-                type="button"
-                id="mobile-nav-more"
-                onClick={() => setIsMobileMoreOpen(!isMobileMoreOpen)}
-                className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
-                  ["sheets", "backup", "reports"].includes(activeTab) || isMobileMoreOpen
-                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
-                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
-                }`}
-              >
-                <Layers className="h-5 w-5" />
-                <span className="text-[10px] mt-0.5">More</span>
+                <BarChart3 className="h-5 w-5" />
+                <span className="text-[10px] mt-0.5">Reports</span>
               </button>
             </nav>
 

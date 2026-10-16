@@ -595,6 +595,44 @@ export const moveDriveFile = async (
   }
 };
 
+/**
+ * Rename a file or folder on Google Drive
+ */
+export const renameDriveFile = async (token: string, fileId: string, newName: string): Promise<void> => {
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ name: newName })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || "Failed to rename file.");
+  }
+};
+
+/**
+ * Move a file to trash on Google Drive
+ */
+export const trashDriveFile = async (token: string, fileId: string): Promise<void> => {
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ trashed: true })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || "Failed to trash file.");
+  }
+};
+
 
 
 // ---------------------------------------------------------
