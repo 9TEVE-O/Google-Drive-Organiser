@@ -2,17 +2,19 @@ import React, { useState, useEffect } from "react";
 import { 
   Folder, File, FileText, Plus, Search, ArrowLeft, Edit3, 
   ExternalLink, Move, ChevronRight, Filter, PlusCircle, Check, X, RefreshCw, Eye,
-  FileSpreadsheet, Zap, CheckCircle2, Archive, ShieldAlert, Layers, Bell
+  FileSpreadsheet, Zap, CheckCircle2, Archive, ShieldAlert, Layers, Bell,
+  FolderSearch
 } from "lucide-react";
 import { DriveFile, ActivityLog } from "../types";
 import { 
   createDriveFolder, createDriveTextFile, updateDriveTextFile, 
   getDriveTextFileContent, moveDriveFile, createSpreadsheet,
-  uploadDriveBlob
+  uploadDriveBlob, createGoogleDoc, openGooglePicker, getGoogleDoc
 } from "../lib/googleApi";
 import { evaluateFileDecision, getDecisionSystemMetrics, DecisionSystemMetrics } from "../lib/decisionEngine";
 import FilePreviewModal from "./FilePreviewModal";
 import ContextualActionToolbar from "./ContextualActionToolbar";
+import GoogleDocViewerModal from "./GoogleDocViewerModal";
 
 interface DriveBrowserProps {
   token: string | null;
@@ -72,6 +74,15 @@ export default function DriveBrowser({
   const [showDocModal, setShowDocModal] = useState(false);
   const [newDocName, setNewDocName] = useState("");
   const [newDocContent, setNewDocContent] = useState("");
+  const [newDocFormat, setNewDocFormat] = useState<'google_doc' | 'text'>('google_doc');
+
+  // Google Docs Viewer Modal state
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [selectedDocTitle, setSelectedDocTitle] = useState<string>("");
+  const [isDocViewerOpen, setIsDocViewerOpen] = useState(false);
+
+  // Google Picker state
+  const [isLaunchingPicker, setIsLaunchingPicker] = useState(false);
 
   const [showSheetModal, setShowSheetModal] = useState(false);
   const [newSheetTitle, setNewSheetTitle] = useState("");
@@ -116,6 +127,9 @@ export default function DriveBrowser({
 
   const handleActionSelect = (actionId: string) => {
     switch (actionId) {
+      case 'google-picker':
+        handleLaunchGooglePicker();
+        break;
       case 'new-doc':
         setShowDocModal(true);
         break;
@@ -405,24 +419,67 @@ export default function DriveBrowser({
     }
   };
 
-  // Handle Creating a new document
+  // Handle Creating a new document (supports Google Docs API and text documents)
   const handleCreateDocumentAction = async () => {
-    if (!token || !newDocName) return;
+    if (!token || !newDocName.trim()) return;
     try {
       setIsSavingEdit(true);
       const parentDir = currentFolderId === "root" ? undefined : currentFolderId;
-      const result = await createDriveTextFile(token, newDocName, newDocContent, parentDir);
 
-      addLog("create", `Created direct text document "${newDocName}"`, `Document ID: ${result.id}`);
-      setNewDocName("");
-      setNewDocContent("");
-      setShowDocModal(false);
-      await onRefresh();
+      if (newDocFormat === "google_doc") {
+        const result = await createGoogleDoc(token, newDocName.trim(), newDocContent, parentDir);
+        addLog("create", `Created Google Doc "${result.title}" via Docs API`, `Document ID: ${result.documentId}`);
+        setNewDocName("");
+        setNewDocContent("");
+        setShowDocModal(false);
+        await onRefresh();
+
+        // Immediately open the newly created Google Doc in the viewer modal
+        setSelectedDocId(result.documentId);
+        setSelectedDocTitle(result.title);
+        setIsDocViewerOpen(true);
+      } else {
+        const result = await createDriveTextFile(token, newDocName.trim(), newDocContent, parentDir);
+        addLog("create", `Created direct text document "${newDocName.trim()}"`, `Document ID: ${result.id}`);
+        setNewDocName("");
+        setNewDocContent("");
+        setShowDocModal(false);
+        await onRefresh();
+      }
     } catch (e: any) {
-      addLog("modify", "Error creating Google Drive text document: " + e.message);
+      addLog("modify", "Error creating document: " + e.message);
       console.error("Error creating document:", e);
     } finally {
       setIsSavingEdit(false);
+    }
+  };
+
+  // Launch Google Picker client modal
+  const handleLaunchGooglePicker = async () => {
+    if (!token) return;
+    setIsLaunchingPicker(true);
+    try {
+      await openGooglePicker({
+        token,
+        onPick: (picked) => {
+          addLog("create", `Selected file via Google Picker: "${picked.name}"`, `ID: ${picked.id} · MIME: ${picked.mimeType}`);
+          if (picked.mimeType === "application/vnd.google-apps.document") {
+            setSelectedDocId(picked.id);
+            setSelectedDocTitle(picked.name);
+            setIsDocViewerOpen(true);
+          } else {
+            setSearchQuery(picked.name);
+          }
+        },
+        onCancel: () => {
+          // Picker closed without selection
+        }
+      });
+    } catch (err: any) {
+      console.warn("Google Picker launch notice:", err);
+      addLog("modify", `Google Picker status: ${err?.message || "Unavailable"}`);
+    } finally {
+      setIsLaunchingPicker(false);
     }
   };
 
@@ -810,6 +867,17 @@ export default function DriveBrowser({
               <span>Sync</span>
             </button>
 
+            <button
+              id="btn-open-google-picker"
+              onClick={handleLaunchGooglePicker}
+              disabled={isLaunchingPicker}
+              title="Pick files or upload with Google Picker"
+              className="flex items-center gap-1.5 rounded-xl border border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/80 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 px-3 py-2 text-xs font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-900/60 shadow-2xs transition-all cursor-pointer disabled:opacity-50"
+            >
+              <FolderSearch className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+              <span>{isLaunchingPicker ? "Opening..." : "Google Picker"}</span>
+            </button>
+
             <ContextualActionToolbar
               activeTab="drive"
               onActionSelect={handleActionSelect}
@@ -1018,12 +1086,23 @@ export default function DriveBrowser({
               {filteredFiles.map((file, fileIdx) => {
                 const isFolder = file.mimeType === "application/vnd.google-apps.folder";
                 const isSheet = file.mimeType === "application/vnd.google-apps.spreadsheet" || file.mimeType === "text/csv" || file.name.endsWith(".csv") || file.name.endsWith(".xlsx");
+                const isGoogleDoc = file.mimeType === "application/vnd.google-apps.document";
                 const meta = getFileMetadata(file);
 
                 return (
                   <div 
                     key={`mobile-file-${file.id}-${fileIdx}`}
-                    onClick={() => isFolder ? handleOpenFolder(file) : setPreviewFile(file)}
+                    onClick={() => {
+                      if (isFolder) {
+                        handleOpenFolder(file);
+                      } else if (isGoogleDoc) {
+                        setSelectedDocId(file.id);
+                        setSelectedDocTitle(file.name);
+                        setIsDocViewerOpen(true);
+                      } else {
+                        setPreviewFile(file);
+                      }
+                    }}
                     className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 active:bg-slate-100 dark:active:bg-slate-800 transition cursor-pointer"
                   >
                     <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -1032,6 +1111,8 @@ export default function DriveBrowser({
                           <Folder className="h-5 w-5 text-amber-500 fill-amber-500/20" />
                         ) : isSheet ? (
                           <FileSpreadsheet className="h-5 w-5 text-emerald-500" />
+                        ) : isGoogleDoc ? (
+                          <FileText className="h-5 w-5 text-blue-500" />
                         ) : (
                           <FileText className="h-5 w-5 text-slate-500" />
                         )}
@@ -1132,6 +1213,7 @@ export default function DriveBrowser({
                 {filteredFiles.map((file, fileIdx) => {
                   const isFolder = file.mimeType === "application/vnd.google-apps.folder";
                   const isSheet = file.mimeType === "application/vnd.google-apps.spreadsheet" || file.mimeType === "text/csv" || file.name.endsWith(".csv") || file.name.endsWith(".xlsx");
+                  const isGoogleDoc = file.mimeType === "application/vnd.google-apps.document";
                   const isEditableText = file.mimeType === "text/plain" || file.mimeType === "text/markdown";
                   const meta = getFileMetadata(file);
 
@@ -1152,6 +1234,8 @@ export default function DriveBrowser({
                             <Folder className="h-4 w-4 text-amber-600 dark:text-amber-500 shrink-0" />
                           ) : isSheet ? (
                             <FileSpreadsheet className="h-4 w-4 text-emerald-600 dark:text-emerald-500 shrink-0" />
+                          ) : isGoogleDoc ? (
+                            <FileText className="h-4 w-4 text-blue-600 dark:text-blue-500 shrink-0" />
                           ) : (
                             <FileText className="h-4 w-4 text-slate-500 dark:text-slate-400 shrink-0" />
                           )}
@@ -1168,9 +1252,17 @@ export default function DriveBrowser({
                               <div className="flex items-center gap-1.5">
                                 <button
                                   id={`file-name-btn-${file.id}`}
-                                  onClick={() => setPreviewFile(file)}
+                                  onClick={() => {
+                                    if (isGoogleDoc) {
+                                      setSelectedDocId(file.id);
+                                      setSelectedDocTitle(file.name);
+                                      setIsDocViewerOpen(true);
+                                    } else {
+                                      setPreviewFile(file);
+                                    }
+                                  }}
                                   className="text-slate-900 dark:text-slate-100 hover:underline font-medium text-left truncate max-w-xs sm:max-w-md cursor-pointer"
-                                  title="Click to view file details"
+                                  title={isGoogleDoc ? "Click to view Google Doc" : "Click to view file details"}
                                 >
                                   {file.name}
                                 </button>
@@ -1335,6 +1427,20 @@ export default function DriveBrowser({
                               <ExternalLink className="h-3.5 w-3.5" />
                             </a>
                           )}
+                          {isGoogleDoc && (
+                            <button
+                              id={`action-open-doc-${file.id}`}
+                              onClick={() => {
+                                setSelectedDocId(file.id);
+                                setSelectedDocTitle(file.name);
+                                setIsDocViewerOpen(true);
+                              }}
+                              className="rounded p-1 text-blue-500 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition cursor-pointer"
+                              title="Open in Google Docs Viewer"
+                            >
+                              <FileText className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                           {isEditableText && (
                             <button
                               onClick={() => handleStartEdit(file)}
@@ -1413,13 +1519,66 @@ export default function DriveBrowser({
       {showDocModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl animate-in fade-in duration-150">
-            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm mb-1">New Text Document</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Create a text file directly on Google Drive.</p>
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm mb-1">
+              Create New Document
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+              Create a document directly in {currentFolderId === "root" ? "My Drive" : "the current folder"}.
+            </p>
+
+            {/* Document Format Selector */}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <button
+                type="button"
+                onClick={() => setNewDocFormat("google_doc")}
+                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                  newDocFormat === "google_doc"
+                    ? "border-blue-500 bg-blue-50/70 dark:bg-blue-950/40 text-blue-900 dark:text-blue-200 shadow-2xs"
+                    : "border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold flex items-center gap-1.5">
+                    <FileText className="h-3.5 w-3.5 text-blue-600" />
+                    Google Doc
+                  </span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
+                    Docs v1
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                  Full Google Docs API document with rich text support.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setNewDocFormat("text")}
+                className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                  newDocFormat === "text"
+                    ? "border-indigo-500 bg-indigo-50/70 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-200 shadow-2xs"
+                    : "border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold flex items-center gap-1.5">
+                    <File className="h-3.5 w-3.5 text-slate-500" />
+                    Plain Text
+                  </span>
+                  <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                    .txt
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                  Standard plain text file stored in Google Drive.
+                </p>
+              </button>
+            </div>
             
             <input
               type="text"
               id="new-doc-name"
-              placeholder="Document name..."
+              placeholder={newDocFormat === "google_doc" ? "Google Doc title (e.g. Project Brief)..." : "File name (e.g. notes.txt)..."}
               value={newDocName}
               onChange={e => setNewDocName(e.target.value)}
               className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:border-slate-400 dark:focus:border-slate-500 focus:outline-none transition mb-2.5"
@@ -1427,8 +1586,8 @@ export default function DriveBrowser({
             />
 
             <textarea
-              placeholder="Type document content here..."
-              rows={6}
+              placeholder={newDocFormat === "google_doc" ? "Initial document content (optional)..." : "Type text content here..."}
+              rows={5}
               value={newDocContent}
               onChange={e => setNewDocContent(e.target.value)}
               className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-slate-400 dark:focus:border-slate-500 focus:outline-none transition mb-4"
@@ -1445,9 +1604,9 @@ export default function DriveBrowser({
                 id="btn-confirm-new-doc"
                 onClick={handleCreateDocumentAction}
                 disabled={isSavingEdit || !newDocName.trim()}
-                className="rounded-lg bg-slate-900 dark:bg-slate-100 px-3 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white transition disabled:opacity-50 cursor-pointer"
+                className="rounded-lg bg-blue-600 hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-1.5 text-xs font-medium text-white transition disabled:opacity-50 cursor-pointer shadow-xs"
               >
-                {isSavingEdit ? "Saving..." : "Create"}
+                {isSavingEdit ? "Creating..." : newDocFormat === "google_doc" ? "Create Google Doc" : "Create File"}
               </button>
             </div>
           </div>
@@ -1633,6 +1792,20 @@ export default function DriveBrowser({
           onExecuteDecision={handleExecuteSingleDecision}
         />
       )}
+
+      {/* MODAL: Google Doc Interactive Viewer & Editor */}
+      <GoogleDocViewerModal
+        isOpen={isDocViewerOpen}
+        onClose={() => {
+          setIsDocViewerOpen(false);
+          setSelectedDocId(null);
+        }}
+        documentId={selectedDocId}
+        documentTitle={selectedDocTitle}
+        token={token}
+        addLog={addLog}
+        onRefresh={onRefresh}
+      />
     </div>
   );
 }

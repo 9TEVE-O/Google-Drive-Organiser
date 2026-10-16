@@ -21,7 +21,8 @@ import {
   Tag,
   Move,
   X,
-  Sparkles
+  Sparkles,
+  FolderSearch
 } from 'lucide-react';
 
 export type DashboardTab = 'drive' | 'sheets' | 'organizer' | 'backup' | 'tasks' | 'reports' | 'chat';
@@ -132,6 +133,7 @@ export const ContextualActionToolbar: React.FC<ContextualActionToolbarProps> = (
   // Standard tab action configurations
   const defaultTabActions: Record<DashboardTab, ActionItem[]> = {
     drive: [
+      { id: 'google-picker', label: 'Google Picker', icon: FolderSearch, onClick: () => onActionSelect('google-picker') },
       { id: 'new-doc', label: 'New Doc', icon: PlusCircle, onClick: () => onActionSelect('new-doc') },
       { id: 'new-sheet', label: 'New Sheet', icon: FileSpreadsheet, onClick: () => onActionSelect('new-sheet') },
       { id: 'new-folder', label: 'New Folder', icon: FolderPlus, onClick: () => onActionSelect('new-folder') },

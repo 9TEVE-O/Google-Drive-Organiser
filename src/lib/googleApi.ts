@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut, setPersistence, browserSessionPersistence } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { DriveFile, TaskItem, SheetMetadata } from '../types';
+import { DriveFile, TaskItem, SheetMetadata, GoogleDocContent, PickedFileItem } from '../types';
 import { evaluateFileDecision } from './decisionEngine';
 
 // Initialize Firebase App
@@ -18,6 +18,9 @@ export const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/drive');
 provider.addScope('https://www.googleapis.com/auth/drive.file');
 provider.addScope('https://www.googleapis.com/auth/drive.readonly');
+provider.addScope('https://www.googleapis.com/auth/drive.metadata.readonly');
+provider.addScope('https://www.googleapis.com/auth/documents');
+provider.addScope('https://www.googleapis.com/auth/documents.readonly');
 provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 provider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
 provider.addScope('https://www.googleapis.com/auth/gmail.send');
@@ -1099,6 +1102,265 @@ export const exportDriveInventoryToSheet = async (
   return createSpreadsheet(token, title, "Decision Matrix & Inventory", rows, parentFolderId);
 };
 
+// ---------------------------------------------------------
+// GOOGLE DOCS API (v1)
+// ---------------------------------------------------------
+
+/**
+ * Extract plain text from Google Doc structural elements
+ */
+export const extractGoogleDocText = (doc: any): string => {
+  if (!doc || !doc.body || !doc.body.content) return "";
+  let fullText = "";
+
+  for (const element of doc.body.content) {
+    if (element.paragraph) {
+      for (const pElement of element.paragraph.elements || []) {
+        if (pElement.textRun && pElement.textRun.content) {
+          fullText += pElement.textRun.content;
+        }
+      }
+    } else if (element.table) {
+      for (const row of element.table.tableRows || []) {
+        for (const cell of row.tableCells || []) {
+          for (const cellContent of cell.content || []) {
+            if (cellContent.paragraph) {
+              for (const pElement of cellContent.paragraph.elements || []) {
+                if (pElement.textRun && pElement.textRun.content) {
+                  fullText += pElement.textRun.content.trim() + " | ";
+                }
+              }
+            }
+          }
+        }
+        fullText += "\n";
+      }
+    }
+  }
+
+  return fullText;
+};
+
+/**
+ * Fetch a Google Doc by documentId using the Google Docs v1 API
+ */
+export const getGoogleDoc = async (token: string, documentId: string): Promise<GoogleDocContent> => {
+  const res = await fetch(`https://docs.googleapis.com/v1/documents/${documentId}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Failed to fetch Google Doc (${res.status})`);
+  }
+
+  const doc = await res.json();
+  const plainText = extractGoogleDocText(doc);
+  const words = plainText.trim() ? plainText.trim().split(/\s+/).length : 0;
+
+  return {
+    documentId: doc.documentId,
+    title: doc.title || "Untitled Document",
+    revisionId: doc.revisionId,
+    plainText,
+    wordCount: words,
+    characterCount: plainText.length,
+    rawDoc: doc
+  };
+};
+
+/**
+ * Append text to a Google Doc using Docs batchUpdate (insertText)
+ */
+export const appendGoogleDocText = async (
+  token: string,
+  documentId: string,
+  text: string
+): Promise<any> => {
+  const textToInsert = text.endsWith("\n") ? text : text + "\n";
+  const res = await fetch(`https://docs.googleapis.com/v1/documents/${documentId}:batchUpdate`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      requests: [
+        {
+          insertText: {
+            endOfSegmentLocation: {},
+            text: textToInsert
+          }
+        }
+      ]
+    })
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || "Failed to append text to Google Doc");
+  }
+
+  return res.json();
+};
+
+/**
+ * Create a new Google Doc using the Google Docs v1 API
+ * Optionally relocates it into parentFolderId in Google Drive
+ */
+export const createGoogleDoc = async (
+  token: string,
+  title: string,
+  initialContent?: string,
+  parentFolderId?: string
+): Promise<{ documentId: string; title: string; documentUrl: string }> => {
+  const res = await fetch("https://docs.googleapis.com/v1/documents", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ title: title.trim() || "Untitled Document" })
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || "Failed to create Google Doc");
+  }
+
+  const newDoc = await res.json();
+  const documentId = newDoc.documentId;
+
+  // Append initial text if provided
+  if (initialContent && initialContent.trim()) {
+    try {
+      await appendGoogleDocText(token, documentId, initialContent);
+    } catch (textErr) {
+      console.warn("Could not append initial content to Google Doc:", textErr);
+    }
+  }
+
+  // Relocate to parent folder if specified and not root
+  if (parentFolderId && parentFolderId !== "root") {
+    try {
+      await moveDriveFile(token, documentId, parentFolderId, "root");
+    } catch (moveErr) {
+      console.warn("Could not relocate Google Doc to folder:", moveErr);
+    }
+  }
+
+  return {
+    documentId,
+    title: newDoc.title || title,
+    documentUrl: `https://docs.google.com/document/d/${documentId}/edit`
+  };
+};
+
+// ---------------------------------------------------------
+// GOOGLE PICKER API (Client-side interactive modal)
+// ---------------------------------------------------------
+
+/**
+ * Loads the Google API client script and initializes the Google Picker module
+ */
+export const loadGooglePickerApi = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if ((window as any).google?.picker) {
+      resolve();
+      return;
+    }
+
+    const checkGapi = () => {
+      if ((window as any).gapi) {
+        (window as any).gapi.load('picker', {
+          callback: () => {
+            if ((window as any).google?.picker) {
+              resolve();
+            } else {
+              reject(new Error("Google Picker library failed to initialize"));
+            }
+          },
+          onerror: () => reject(new Error("Failed to load Google Picker via gapi.load"))
+        });
+      } else {
+        setTimeout(checkGapi, 120);
+      }
+    };
+
+    if (!(window as any).gapi) {
+      const existing = document.querySelector('script[src*="apis.google.com/js/api.js"]');
+      if (existing) {
+        existing.addEventListener('load', checkGapi);
+        setTimeout(checkGapi, 200);
+      } else {
+        const script = document.createElement('script');
+        script.src = 'https://apis.google.com/js/api.js';
+        script.async = true;
+        script.defer = true;
+        script.onload = checkGapi;
+        script.onerror = () => reject(new Error("Failed to load Google API script (api.js)"));
+        document.body.appendChild(script);
+      }
+    } else {
+      checkGapi();
+    }
+  });
+};
+
+/**
+ * Open the Google Picker dialog
+ * Follows the exact pattern from references/picker.md
+ */
+export const openGooglePicker = async (options: {
+  token: string;
+  onPick: (file: PickedFileItem) => void;
+  onCancel?: () => void;
+  mimeTypes?: string;
+  viewId?: string;
+}): Promise<void> => {
+  await loadGooglePickerApi();
+
+  const google = (window as any).google;
+  if (!google?.picker) {
+    throw new Error("Google Picker library is not ready.");
+  }
+
+  const pickerOrigin =
+    window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0
+      ? window.location.ancestorOrigins[window.location.ancestorOrigins.length - 1]
+      : window.location.origin;
+
+  const view = new google.picker.DocsView(google.picker.ViewId.DOCS);
+  if (options.mimeTypes) {
+    view.setMimeTypes(options.mimeTypes);
+  }
+
+  const pickerBuilder = new google.picker.PickerBuilder()
+    .addView(view)
+    .addView(new google.picker.DocsUploadView())
+    .setOAuthToken(options.token)
+    .setCallback((data: any) => {
+      if (data.action === google.picker.Action.PICKED) {
+        const doc = data.docs?.[0];
+        if (doc) {
+          options.onPick({
+            id: doc.id,
+            name: doc.name,
+            mimeType: doc.mimeType,
+            url: doc.url,
+            sizeBytes: doc.sizeBytes,
+            lastEditedUtc: doc.lastEditedUtc
+          });
+        }
+      } else if (data.action === google.picker.Action.CANCEL) {
+        options.onCancel?.();
+      }
+    })
+    .setOrigin(pickerOrigin);
+
+  const picker = pickerBuilder.build();
+  picker.setVisible(true);
+};
 
 // ---------------------------------------------------------
 // UTILS

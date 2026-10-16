@@ -242,3 +242,22 @@ export interface UndoSnapshot {
   moves: UndoSnapshotMove[];
 }
 
+export interface GoogleDocContent {
+  documentId: string;
+  title: string;
+  revisionId?: string;
+  plainText: string;
+  wordCount: number;
+  characterCount: number;
+  rawDoc?: any;
+}
+
+export interface PickedFileItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  url?: string;
+  sizeBytes?: number;
+  lastEditedUtc?: number;
+}
+

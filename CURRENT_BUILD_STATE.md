@@ -28,6 +28,8 @@
 | **Smart Task Reminders & Scheduled Actions** | `VERIFIED` | Target file/folder linking, automated scheduled actions (folder creation, doc note appends, file relocations), recurring schedules (daily/weekly/monthly/once) | Persistent background clock scheduler, instant test execution trigger, segmented status filters, in-app audio chime & alert banners |
 | **Mandatory Human Email Approval Gate** | `VERIFIED` | Interactive human approval modal (`EmailApprovalModal`) gating all outbound emails | Zero silent background email dispatch, rich structured HTML message inspection, explicit Approve/Decline controls conforming to human approval rule |
 | **Firebase Admin Auth Boundary** | `VERIFIED` | Server-side Firebase ID token verification middleware on all `/api/gemini` routes | Express middleware checks Bearer token against Firebase Admin SDK, blocks unauthenticated callers with HTTP 401 |
+| **Google Docs API Integration** | `VERIFIED` | Google Docs v1 reading, text extraction, new doc creation, and batchUpdate text append (`GoogleDocViewerModal`) | Clean structural element parsing, interactive word/character counter, explicit human confirmation before mutating doc content |
+| **Google Picker Integration** | `VERIFIED` | Client-side Google Picker widget (`openGooglePicker`) with DocsView and DocsUploadView | Uses origin detection, oauth token integration, direct file selection with auto-triage and doc preview |
 
 ---
 
