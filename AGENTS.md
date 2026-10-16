@@ -32,8 +32,7 @@ The endpoint paths and JSON payload structures must remain stable:
 3. `POST /api/gemini/organize-plan`: Smart folder layout recommendations (`<untrusted_user_files>`).
 4. `POST /api/gemini/compose-report`: Automated executive activity report composition.
 5. `POST /api/gemini/file-summary`: Deep file insight and document preview extraction.
-6. `POST /api/gemini/generate-image`: Image synthesis for phone/desktop wallpapers using `imagen-3.0-generate-002`.
-7. `POST /api/gemini/chat`: Multi-turn conversational chat with role presets.
+6. `POST /api/gemini/chat`: Multi-turn conversational chat with role presets.
 
 ### C. Resilience & Fallback Engine
 - Every AI endpoint in `server.ts` MUST use `generateContentWithResilience()`.
@@ -52,8 +51,8 @@ The endpoint paths and JSON payload structures must remain stable:
 
 ## 3. UI/UX Hierarchy & State Rules
 
-- **Fixed Navigation**: Maintain the 7 primary tabs in `src/App.tsx`:
-  `drive` (Browser), `organizer` (Smart Rules), `backup` (Scheduled Jobs), `tasks` (Reminders & Deadlines), `reports` (Activity Visualizer), `image_gen` (Wallpaper Generator), `chat` (AI Assistant).
+- **Fixed Navigation**: Maintain the 6 primary tabs in `src/App.tsx`:
+  `drive` (Browser), `organizer` (Smart Rules), `backup` (Scheduled Jobs), `tasks` (Reminders & Deadlines), `reports` (Activity Visualizer), `chat` (AI Assistant).
 - **Zero Unsolicited Structural Additions**: Do not add new persistent sidebars, extra secondary tabs, or unrequested landing hero blocks.
 - **Strict Key Hygiene**: When rendering lists of files, tasks, or logs, always use composite keys (`file.id + index`) to ensure stable React reconciliation during rapid filtering or pagination.
 - **Color & Theme Harmony**: Retain the high-contrast slate neutral palette (`slate-900` / `slate-50` / `indigo-600`) with smooth dark/light mode toggling adhering to Tailwind CSS v4 standards.
@@ -66,3 +65,18 @@ Before completing any change, you MUST run:
 1. `npm run lint` (or `tsc --noEmit`) to verify zero TypeScript errors.
 2. `npm run build` to verify clean production bundle compilation.
 3. Verify that the dev server starts and listens on host `0.0.0.0` and port `3000`.
+
+---
+
+## 5. Repository-Carried Continuation Architecture (v0.9.1)
+
+To withstand context compaction, session truncation, or multi-agent handoffs, the codebase implements the App by AI v0.9.1 continuation governance architecture:
+
+1. **Governance Specification**: Refer to `docs/CONTINUATION_AND_CHANGE_GOVERNANCE.md` for dependency-based validity propagation, the canonical non-authority of recency, and schema migration rules.
+2. **Foundation Lifecycle**: Refer to `docs/FOUNDATION_CLOSURE.md` and `docs/FOUNDATION_CLOSURE_VALIDATION.md` for the five-stage foundation lifecycle:
+   `Candidate Foundation` → `independent closure` → `coordinated revision` → `targeted re-review` → `Implementation-ready Foundation`.
+3. **Build State Ledger**: `CURRENT_BUILD_STATE.md` tracks active foundation status, verified claims, and invalidation watchpoints.
+4. **Decisions & Risk Register**: `DECISIONS_AND_RISKS.md` tracks all ADRs across the explicit lifecycle (`PROPOSED`, `ACTIVE`, `SUPERSEDED`, `REVOKED`, `INVALIDATED`) alongside mitigated operational risks.
+5. **Verification Protocol**: `CHECKPOINTS_AND_TESTS.md` holds automated gates, security audits, and empirical evidence.
+6. **Cold-Start Sequence**: Resuming agents MUST consult documents in order: `AGENTS.md` → `CURRENT_BUILD_STATE.md` → `DECISIONS_AND_RISKS.md` → `CHECKPOINTS_AND_TESTS.md` → `docs/FOUNDATION_CLOSURE.md`.
+

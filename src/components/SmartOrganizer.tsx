@@ -3,10 +3,12 @@ import React, { useState } from "react";
 import { 
   Play, Sparkles, FolderPlus, Compass, ArrowRight, CheckCircle2, 
   RefreshCw, ListChecks, HelpCircle, HardDrive, Cpu, AlertTriangle, Layers,
-  Zap, FolderTree, ChevronRight, Check, ArrowUpRight, Folder, Sliders
+  Zap, FolderTree, ChevronRight, Check, ArrowUpRight, Folder, Sliders,
+  Archive, ShieldAlert, Move
 } from "lucide-react";
 import { DriveFile, DriveAnalysisResult, OrganizationReport, OrganizerRule } from "../types";
 import { createDriveFolder, createNestedDriveFolders, moveDriveFile } from "../lib/googleApi";
+import { evaluateFileDecision, getDecisionSystemMetrics } from "../lib/decisionEngine";
 import InfoTooltip from "./InfoTooltip";
 import OrganizerRulesSettings, { DEFAULT_ORGANIZER_RULES } from "./OrganizerRulesSettings";
 
@@ -72,6 +74,93 @@ export default function SmartOrganizer({
     filesMoved: number;
     timestamp: string;
   } | null>(null);
+
+  // Dynamic Decision System operational metrics
+  const decisionMetrics = React.useMemo(() => {
+    return getDecisionSystemMetrics(files);
+  }, [files]);
+
+  // Evaluated files with guaranteed zero "Unsorted" debt
+  const evaluatedFiles = React.useMemo(() => {
+    return files.map(f => (!f.category || f.category === "Unsorted" || !f.decision) ? evaluateFileDecision(f, rules) : f);
+  }, [files, rules]);
+
+  // Pending decision candidates
+  const pendingDecisions = React.useMemo(() => {
+    return evaluatedFiles.filter(f => f.decision && (f.decision.decisionType === "relocate" || f.decision.decisionType === "archive"));
+  }, [evaluatedFiles]);
+
+  const [triageFilter, setTriageFilter] = useState<'all' | 'relocate' | 'archive' | 'high-urgency'>('all');
+  const [executingSingleId, setExecutingSingleId] = useState<string | null>(null);
+
+  // Filtered triage list
+  const filteredTriageFiles = React.useMemo(() => {
+    if (triageFilter === "relocate") {
+      return pendingDecisions.filter(f => f.decision?.decisionType === "relocate");
+    }
+    if (triageFilter === "archive") {
+      return pendingDecisions.filter(f => f.decision?.decisionType === "archive");
+    }
+    if (triageFilter === "high-urgency") {
+      return pendingDecisions.filter(f => f.decision?.urgency === "high");
+    }
+    return pendingDecisions;
+  }, [pendingDecisions, triageFilter]);
+
+  // Single file decision executor
+  const handleExecuteSingleTriage = async (file: DriveFile) => {
+    const meta = evaluateFileDecision(file, rules);
+    if (!meta.decision || meta.decision.decisionType === "verified") return;
+    setExecutingSingleId(file.id);
+    try {
+      const targetFolder = meta.decision.targetFolder || "General";
+      let targetId = "root";
+
+      const existing = files.find(f => f.mimeType === "application/vnd.google-apps.folder" && f.name.toLowerCase() === targetFolder.toLowerCase());
+      if (existing) {
+        targetId = existing.id;
+      } else if (token) {
+        const created = await createDriveFolder(token, targetFolder, "root");
+        targetId = created.id;
+      }
+
+      if (token) {
+        await moveDriveFile(token, file.id, targetId, file.parents?.[0]);
+      }
+
+      addLog("move", `Autonomous Decision Executed: Relocated "${file.name}" to /${targetFolder}`, meta.decision.rationale);
+      await onRefresh();
+    } catch (err: any) {
+      console.warn("Single triage notice:", err);
+      addLog("move", `Triage notice for "${file.name}": ${err.message || "Failed"}`);
+    } finally {
+      setExecutingSingleId(null);
+    }
+  };
+
+  // Convert all pending decisions into a structured plan and execute directly
+  const handleExecuteAllTriageDecisions = async () => {
+    if (pendingDecisions.length === 0) return;
+    const foldersSet = new Set<string>();
+    const movements = pendingDecisions.map(f => {
+      const target = f.decision?.targetFolder || "General";
+      foldersSet.add(target);
+      return {
+        fileId: f.id,
+        fileName: f.name,
+        destFolderId: "",
+        destFolderName: target,
+        reason: f.decision?.rationale || `Relocate to /${target}`
+      };
+    });
+
+    const triagePlan = {
+      recommendedNewFolders: Array.from(foldersSet),
+      fileMovements: movements
+    };
+
+    await handleExecutePlanAction(triagePlan);
+  };
 
   // Client-side fallback helpers if server response is non-JSON or API temporarily unavailable
   const generateClientFallbackPlan = (filesToPlan: { id: string; name: string; mimeType: string }[]): { recommendedNewFolders: string[]; fileMovements: any[] } => {
@@ -369,18 +458,25 @@ export default function SmartOrganizer({
         setExecutionLog(prev => [...prev, `[DIR PREPARE] Resolving directory hierarchy "${folderPath}"...`]);
 
         let resolvedId = "";
-        if (token) {
-          // Perform actual Google Drive nested folder creation/resolution
-          resolvedId = await createNestedDriveFolders(token, folderPath, folderIdCache);
-        } else {
-          // Perform simulated nested folder resolution
-          resolvedId = resolveLocalNestedFolder(folderPath);
-        }
+        try {
+          if (token) {
+            // Perform actual Google Drive nested folder creation/resolution
+            resolvedId = await createNestedDriveFolders(token, folderPath, folderIdCache);
+          } else {
+            // Perform simulated nested folder resolution
+            resolvedId = resolveLocalNestedFolder(folderPath);
+          }
 
-        folderIdCache[folderPath] = resolvedId;
-        step++;
-        setExecutedCount(prev => ({ ...prev, current: step }));
-        setExecutionLog(prev => [...prev, `[DIR CREATED] Ready nested folder "${folderPath}" (ID: ${resolvedId.substring(0, 12)}...).`]);
+          folderIdCache[folderPath] = resolvedId;
+          setExecutionLog(prev => [...prev, `[DIR CREATED] Ready nested folder "${folderPath}" (ID: ${resolvedId.substring(0, 12)}...).`]);
+        } catch (dirErr: any) {
+          console.warn(`Could not prepare folder "${folderPath}":`, dirErr);
+          setExecutionLog(prev => [...prev, `⚠️ Directory notice on "${folderPath}": ${dirErr.message || "Using fallback"}`]);
+          folderIdCache[folderPath] = "root";
+        } finally {
+          step++;
+          setExecutedCount(prev => ({ ...prev, current: step }));
+        }
       }
 
       // 2. Perform actual file transfers inside nested folders
@@ -409,28 +505,34 @@ export default function SmartOrganizer({
         }
 
         // Perform actual Drive transfer via API or simulated in local state
-        if (token) {
-          const fileMeta = files.find(f => f.id === move.fileId);
-          const currentParents = fileMeta?.parents?.join(",");
-          await moveDriveFile(token, move.fileId, targetId, currentParents);
-        } else {
-          // Update local memory state
-          localFilesState = localFilesState.map(f => {
-            if (f.id === move.fileId) {
-              return {
-                ...f,
-                parents: [targetId],
-                category: destPath
-              };
-            }
-            return f;
-          });
-        }
+        try {
+          if (token) {
+            const fileMeta = files.find(f => f.id === move.fileId);
+            const currentParents = fileMeta?.parents?.join(",");
+            await moveDriveFile(token, move.fileId, targetId, currentParents);
+          } else {
+            // Update local memory state
+            localFilesState = localFilesState.map(f => {
+              if (f.id === move.fileId) {
+                return {
+                  ...f,
+                  parents: [targetId],
+                  category: destPath
+                };
+              }
+              return f;
+            });
+          }
 
-        movedCount++;
-        step++;
-        setExecutedCount(prev => ({ ...prev, current: step }));
-        setExecutionLog(prev => [...prev, `[SUCCESS] Shifted "${move.fileName}" -> "${destPath}".`]);
+          movedCount++;
+          setExecutionLog(prev => [...prev, `[SUCCESS] Shifted "${move.fileName}" -> "${destPath}".`]);
+        } catch (itemErr: any) {
+          console.warn(`Could not transfer file "${move.fileName}":`, itemErr);
+          setExecutionLog(prev => [...prev, `⚠️ Notice on "${move.fileName}": ${itemErr.message || "Could not relocate file"}`]);
+        } finally {
+          step++;
+          setExecutedCount(prev => ({ ...prev, current: step }));
+        }
       }
 
       // Update state
@@ -476,109 +578,112 @@ export default function SmartOrganizer({
 
   return (
     <div className="space-y-6">
-      {/* Introduction Dashboard Banner */}
-      <div className="rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/50 to-indigo-100/30 p-6 shadow-sm">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <h2 className="font-display font-bold text-slate-900 text-xl tracking-tight flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-indigo-600 animate-pulse" /> High-Thinking Core
-              <InfoTooltip text="Let our AI scan all your files and determine the best folder structure for you based on what you have." />
-            </h2>
-            <p className="text-xs text-slate-500 max-w-2xl leading-relaxed">
-              Leverage Gemini AI models to sweep across your Google Drive. Plan layouts specify exact directions, and shifting directories performs actual drive transfers inside nested folders seamlessly.
-            </p>
-          </div>
+      {/* Header Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+        <div>
+          <h2 className="font-semibold text-slate-900 dark:text-slate-100 text-lg">
+            Smart Organizer
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            Analyze file contents, configure custom keyword routing, and organize items into structured directories.
+          </p>
+        </div>
 
-          <div className="flex items-center gap-2 shrink-0 flex-wrap">
-            {/* ONE-CLICK MOVE EXECUTION PRIMARY BUTTON */}
-            <button
-              id="btn-one-click-move"
-              onClick={handleOneClickMove}
-              disabled={isExecuting || isPlanning || files.length === 0}
-              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 active:scale-95 disabled:opacity-50 transition cursor-pointer"
-              title="One-Click Move Execution: Plan exact directions and shift files into nested directories immediately"
-            >
-              {isExecuting ? (
-                <>
-                  <RefreshCw className="h-4 w-4 animate-spin" />
-                  <span>Transferring Directories...</span>
-                </>
-              ) : isPlanning ? (
-                <>
-                  <RefreshCw className="h-4 w-4 animate-spin" />
-                  <span>Generating Exact Directions...</span>
-                </>
-              ) : (
-                <>
-                  <Zap className="h-4 w-4 fill-white" />
-                  <span>One-Click Move Execution</span>
-                </>
-              )}
-            </button>
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          {/* Keyword Rules Settings */}
+          <button
+            id="btn-organizer-rules-settings"
+            onClick={() => setIsSettingsOpen(true)}
+            className="hidden sm:flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60 transition cursor-pointer shadow-xs"
+            title="Configure keyword priority rules"
+          >
+            <Sliders className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
+            <span>Keyword Rules</span>
+            <span className="rounded-full bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] font-medium px-1.5 py-0.2">
+              {rules.filter(r => r.enabled !== false).length}
+            </span>
+          </button>
 
-            {/* KEYWORD PRIORITY RULES SETTINGS BUTTON */}
-            <button
-              id="btn-organizer-rules-settings"
-              onClick={() => setIsSettingsOpen(true)}
-              className="flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 shadow-2xs transition cursor-pointer"
-              title="Configure custom keyword priority rules (e.g. 'Invoice' -> 'Finance')"
-            >
-              <Sliders className="h-3.5 w-3.5 text-indigo-600" />
-              <span>Keyword Rules</span>
-              <span className="rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-bold px-1.5 py-0.2">
-                {rules.filter(r => r.enabled !== false).length}
-              </span>
-            </button>
+          {/* Plan Folder Sort */}
+          <button
+            id="btn-generate-plan"
+            onClick={() => handleGenerateSortPlan()}
+            disabled={isPlanning || isExecuting || files.length === 0}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60 disabled:opacity-50 transition cursor-pointer shadow-xs"
+          >
+            {isPlanning ? (
+              <>
+                <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-500" />
+                <span>Planning...</span>
+              </>
+            ) : (
+              <>
+                <Compass className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
+                <span>Plan Structure</span>
+              </>
+            )}
+          </button>
 
-            <button
-              id="btn-generate-plan"
-              onClick={() => handleGenerateSortPlan()}
-              disabled={isPlanning || isExecuting || files.length === 0}
-              className="flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 transition cursor-pointer"
-            >
-              {isPlanning ? (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Planning...
-                </>
-              ) : (
-                <>
-                  <Compass className="h-3.5 w-3.5" /> Plan Folder Sort
-                </>
-              )}
-            </button>
+          {/* Catalogue Drive */}
+          <button
+            id="btn-analyze-files"
+            onClick={handleAnalyzeFiles}
+            disabled={isClassifying || files.length === 0}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60 disabled:opacity-50 transition cursor-pointer shadow-xs"
+          >
+            {isClassifying ? (
+              <>
+                <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-500" />
+                <span>Cataloguing...</span>
+              </>
+            ) : (
+              <>
+                <Cpu className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
+                <span>Catalogue Drive</span>
+              </>
+            )}
+          </button>
 
-            <button
-              id="btn-analyze-files"
-              onClick={handleAnalyzeFiles}
-              disabled={isClassifying || files.length === 0}
-              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition cursor-pointer"
-            >
-              {isClassifying ? (
-                <>
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Classifying...
-                </>
-              ) : (
-                <>
-                  <Cpu className="h-3.5 w-3.5" /> Catalogue Drive
-                </>
-              )}
-            </button>
-          </div>
+          {/* One-Click Move Execution */}
+          <button
+            id="btn-one-click-move"
+            onClick={handleOneClickMove}
+            disabled={isExecuting || isPlanning || files.length === 0}
+            className="flex items-center gap-1.5 rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 active:scale-95 disabled:opacity-50 transition cursor-pointer shadow-xs"
+            title="Execute organization plan and move files into directories"
+          >
+            {isExecuting ? (
+              <>
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                <span>Moving Files...</span>
+              </>
+            ) : isPlanning ? (
+              <>
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                <span>Preparing Move...</span>
+              </>
+            ) : (
+              <>
+                <Zap className="h-3.5 w-3.5 fill-white" />
+                <span>Organize Drive</span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 
       {/* Completion Success Notification */}
       {lastExecutionStats && (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/30 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <Check className="h-5 w-5 stroke-[2.5]" />
+            <div className="h-8 w-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+              <Check className="h-4 w-4 stroke-[2.5]" />
             </div>
             <div>
-              <h4 className="text-xs font-bold text-emerald-950">One-Click Move Execution Complete</h4>
-              <p className="text-[11px] text-emerald-800/90 mt-0.5">
-                Successfully shifted <strong className="font-semibold">{lastExecutionStats.filesMoved} files</strong> into{" "}
-                <strong className="font-semibold">{lastExecutionStats.foldersCreated} nested directories</strong> at {lastExecutionStats.timestamp}.
+              <h4 className="text-xs font-semibold text-emerald-950 dark:text-emerald-200">Organization Complete</h4>
+              <p className="text-[11px] text-emerald-800 dark:text-emerald-300 mt-0.5">
+                Shifted <span className="font-semibold">{lastExecutionStats.filesMoved} files</span> into{" "}
+                <span className="font-semibold">{lastExecutionStats.foldersCreated} nested directories</span> at {lastExecutionStats.timestamp}.
               </p>
             </div>
           </div>
@@ -587,36 +692,35 @@ export default function SmartOrganizer({
             <button
               id="btn-view-explorer-storage"
               onClick={() => onNavigateToTab("drive")}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-white border border-emerald-300 px-3.5 py-1.5 text-xs font-semibold text-emerald-900 hover:bg-emerald-100/50 shadow-2xs transition cursor-pointer shrink-0"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white dark:bg-slate-800 border border-emerald-300 dark:border-emerald-800 px-3 py-1.5 text-xs font-medium text-emerald-900 dark:text-emerald-200 hover:bg-emerald-50 dark:hover:bg-slate-700 transition cursor-pointer shrink-0"
             >
-              <span>View in Explorer Storage</span>
-              <ArrowUpRight className="h-3.5 w-3.5 text-emerald-700" />
+              <span>View Files</span>
+              <ArrowUpRight className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
             </button>
           )}
         </div>
       )}
 
-      {/* Execution Console Progress */}
+      {/* Execution Progress Bar & Logs */}
       {isExecuting && (
-        <div className="rounded-2xl border border-indigo-150 bg-slate-900 text-slate-100 p-5 font-mono text-xs shadow-lg space-y-3">
-          <div className="flex items-center justify-between border-b border-slate-700 pb-2">
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-900 text-slate-100 p-4 font-mono text-xs shadow-md space-y-3">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
             <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
-              <Zap className="h-3.5 w-3.5 fill-emerald-400" /> EXECUTING ONE-CLICK DRIVE TRANSFERS
+              <Zap className="h-3.5 w-3.5 fill-emerald-400" /> Executing Drive Transfers
             </span>
             <span className="text-slate-300 font-medium">
-              {executedCount.current} / {executedCount.total} transfers done
+              {executedCount.current} / {executedCount.total} transfers complete
             </span>
           </div>
 
-          {/* Progress bar */}
-          <div className="w-full bg-slate-800 rounded-full h-2">
+          <div className="w-full bg-slate-800 rounded-full h-1.5">
             <div 
-              className="bg-emerald-500 h-2 rounded-full transition-all duration-300" 
+              className="bg-emerald-500 h-1.5 rounded-full transition-all duration-300" 
               style={{ width: `${executedCount.total > 0 ? (executedCount.current / executedCount.total) * 100 : 0}%` }}
             ></div>
           </div>
 
-          <div className="max-h-48 overflow-y-auto space-y-1 bg-slate-950 p-3 rounded-xl border border-slate-800 text-[11px]">
+          <div className="max-h-40 overflow-y-auto space-y-1 bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-[11px]">
             {executionLog.map((log, index) => (
               <div key={`exec-log-${index}`} className="text-slate-300 leading-relaxed">
                 {log}
@@ -628,46 +732,46 @@ export default function SmartOrganizer({
 
       {/* Grid of Results */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* RECOMMENDED STRUCTURE PLAN: Plan layouts specify exact directions */}
+        {/* RECOMMENDED STRUCTURE PLAN */}
         {orgPlan && (
-          <div className="lg:col-span-5 rounded-2xl border border-indigo-200 bg-white p-5 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-indigo-100 pb-3">
+          <div className="lg:col-span-6 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-150 dark:border-slate-800 pb-3">
               <div>
-                <span className="font-display font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                  <Layers className="h-4.5 w-4.5 text-indigo-600" /> Plan Layout (Exact Directions)
+                <span className="font-semibold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-1.5">
+                  <Layers className="h-4 w-4 text-indigo-600 dark:text-indigo-400" /> Plan Layout
                 </span>
-                <span className="text-[11px] text-slate-500 block mt-0.5">
-                  {orgPlan.fileMovements.length} files targeted for nested transfers
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                  {orgPlan.fileMovements.length} files targeted for organization
                 </span>
               </div>
               <button
                 id="btn-approve-plan"
                 onClick={() => handleExecutePlanAction(orgPlan)}
                 disabled={isExecuting}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-700 shadow-sm active:scale-95 transition cursor-pointer"
-                title="Execute all movements with one click"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 transition cursor-pointer"
+                title="Execute all movements"
               >
                 <Zap className="h-3.5 w-3.5 fill-white" />
-                <span>One-Click Move Execution</span>
+                <span>Apply Plan</span>
               </button>
             </div>
 
             {/* Folder Creations / Nested Hierarchies */}
             <div className="space-y-2">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block">
-                Target Nested Directories ({orgPlan.recommendedNewFolders.length})
+              <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400 dark:text-slate-500 block">
+                Target Folders ({orgPlan.recommendedNewFolders.length})
               </span>
-              <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+              <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
                 {orgPlan.recommendedNewFolders.map((fold, idx) => {
                   const parts = fold.split("/").map(s => s.trim());
                   return (
-                    <div key={`rec-fold-${fold}-${idx}`} className="flex items-center gap-1.5 text-xs font-medium text-slate-700 bg-indigo-50/50 p-2 rounded-lg border border-indigo-100/70">
-                      <FolderTree className="h-3.5 w-3.5 text-indigo-600 shrink-0" />
+                    <div key={`rec-fold-${fold}-${idx}`} className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg border border-slate-200/60 dark:border-slate-700/60">
+                      <FolderTree className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
                       <div className="flex items-center gap-1 flex-wrap">
                         {parts.map((part, pIdx) => (
                           <React.Fragment key={`part-${part}-${pIdx}`}>
                             {pIdx > 0 && <ChevronRight className="h-3 w-3 text-slate-400 shrink-0" />}
-                            <span className={pIdx === parts.length - 1 ? "font-semibold text-indigo-900" : "text-slate-600"}>
+                            <span className={pIdx === parts.length - 1 ? "font-semibold text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-400"}>
                               {part}
                             </span>
                           </React.Fragment>
@@ -677,33 +781,33 @@ export default function SmartOrganizer({
                   );
                 })}
                 {orgPlan.recommendedNewFolders.length === 0 && (
-                  <span className="text-slate-400 italic text-xs block p-2">Using existing directories</span>
+                  <span className="text-slate-400 dark:text-slate-500 italic text-xs block p-2">Using existing directories</span>
                 )}
               </div>
             </div>
 
             {/* File Movement Directions */}
             <div className="space-y-2">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 block pb-1 border-t border-slate-100 pt-3">
-                File Redirection Paths ({orgPlan.fileMovements.length})
+              <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400 dark:text-slate-500 block pb-1 border-t border-slate-100 dark:border-slate-800 pt-3">
+                File Transfers ({orgPlan.fileMovements.length})
               </span>
               <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
                 {orgPlan.fileMovements.map((move: any, idx: number) => {
                   const targetDir = move.destFolderName || "General";
                   const dirParts = targetDir.split("/").map((s: string) => s.trim());
                   return (
-                    <div key={`plan-move-${move.fileId || idx}-${idx}`} className="rounded-xl bg-slate-50/80 p-3 border border-slate-200/80 text-[11px] space-y-1.5">
-                      <div className="font-semibold text-slate-900 truncate text-[11.5px]">{move.fileName}</div>
+                    <div key={`plan-move-${move.fileId || idx}-${idx}`} className="rounded-lg bg-slate-50 dark:bg-slate-800/40 p-3 border border-slate-200/60 dark:border-slate-800 text-xs space-y-1.5">
+                      <div className="font-medium text-slate-900 dark:text-slate-100 truncate">{move.fileName}</div>
                       
-                      <div className="flex items-center gap-1.5 text-slate-600 text-[10.5px]">
-                        <span className="text-slate-400 shrink-0">Exact Direction:</span>
+                      <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400 text-[11px]">
+                        <span className="text-slate-400 shrink-0">Destination:</span>
                         <ArrowRight className="h-3 w-3 text-indigo-500 shrink-0" />
-                        <div className="inline-flex items-center gap-0.5 font-medium text-indigo-700 bg-white px-2 py-0.5 rounded border border-indigo-100">
-                          <Folder className="h-3 w-3 text-indigo-500 mr-1 shrink-0" />
+                        <div className="inline-flex items-center gap-0.5 font-medium text-indigo-700 dark:text-indigo-300 bg-white dark:bg-slate-800 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">
+                          <Folder className="h-3 w-3 text-indigo-500 dark:text-indigo-400 mr-1 shrink-0" />
                           {dirParts.map((part: string, pIdx: number) => (
                             <React.Fragment key={`dir-part-${part}-${pIdx}`}>
                               {pIdx > 0 && <span className="text-slate-400 mx-0.5">/</span>}
-                              <span className={pIdx === dirParts.length - 1 ? "font-bold text-indigo-900" : "text-indigo-600"}>
+                              <span className={pIdx === dirParts.length - 1 ? "font-semibold text-slate-900 dark:text-slate-100" : "text-slate-500 dark:text-slate-400"}>
                                 {part}
                               </span>
                             </React.Fragment>
@@ -713,12 +817,12 @@ export default function SmartOrganizer({
 
                       {move.reason && (
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <p className="text-[10px] text-slate-500 italic leading-snug">
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 italic leading-snug">
                             {move.reason}
                           </p>
                           {(move.reason.toLowerCase().includes("rule") || move.reason.toLowerCase().includes("prioritized")) && (
-                            <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded-md">
-                              <Sparkles className="h-2.5 w-2.5 text-indigo-600" />
+                            <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 px-1.5 py-0.5 rounded">
+                              <Sparkles className="h-2.5 w-2.5 text-indigo-600 dark:text-indigo-400" />
                               Rule Prioritized
                             </span>
                           )}
@@ -733,46 +837,46 @@ export default function SmartOrganizer({
         )}
 
         {/* CLASSIFICATION RESULTS & DYNAMIC SCHEMAS */}
-        <div className={orgPlan ? "lg:col-span-7 space-y-4" : "lg:col-span-12 space-y-4"}>
-          {analysisResults.length > 0 && (
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <h3 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
+        <div className={orgPlan ? "lg:col-span-6 space-y-4" : "lg:col-span-12 space-y-4"}>
+          {analysisResults.length > 0 ? (
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-1.5">
                   <ListChecks className="h-4 w-4 text-emerald-500" /> Catalogued Drive Analysis
                 </h3>
-                <span className="text-[10px] font-mono bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full font-medium">
+                <span className="text-[10px] font-mono bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 rounded-full font-medium">
                   {analysisResults.length} catalogued
                 </span>
               </div>
 
-              <div className="max-h-[360px] overflow-y-auto space-y-2.5 pr-1">
+              <div className="max-h-[380px] overflow-y-auto space-y-2.5 pr-1">
                 {analysisResults.map((item, idx) => (
                   <div 
                     key={`analysis-res-${item.fileId || idx}-${idx}`} 
-                    className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 p-3.5 rounded-xl border border-slate-100 bg-slate-50/50 hover:bg-slate-50 transition"
+                    className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 p-3.5 rounded-lg border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition"
                   >
                     <div className="space-y-1 min-w-0">
-                      <div className="font-medium text-slate-850 truncate text-[12px]">{item.fileName}</div>
+                      <div className="font-medium text-slate-900 dark:text-slate-100 truncate text-xs">{item.fileName}</div>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="rounded-full bg-indigo-50 text-indigo-700 text-[9px] font-semibold px-2 py-0.5">
+                        <span className="rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 text-[9px] font-medium px-2 py-0.5">
                           {item.recommendedCategory}
                         </span>
                         {item.recommendedTags.map((tag, tIdx) => (
-                          <span key={`rec-tag-${tag}-${tIdx}`} className={`text-[9px] font-mono ${tag === 'priority-rule' ? 'text-indigo-700 font-bold bg-indigo-50 px-1 rounded' : 'text-slate-500'}`}>
+                          <span key={`rec-tag-${tag}-${tIdx}`} className={`text-[9px] font-mono ${tag === 'priority-rule' ? 'text-indigo-700 dark:text-indigo-300 font-semibold bg-indigo-50 dark:bg-indigo-950/60 px-1 rounded' : 'text-slate-500 dark:text-slate-400'}`}>
                             #{tag}
                           </span>
                         ))}
                       </div>
-                      <p className="text-[10.5px] text-slate-400 italic">
-                        Why: {item.reason}
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {item.reason}
                       </p>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
                       <div className="text-right">
-                        <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 block">Relevance</span>
+                        <span className="text-[10px] uppercase font-semibold tracking-wider text-slate-400 dark:text-slate-500 block">Score</span>
                         <span className={`text-xs font-semibold font-mono ${
-                          item.relevanceScore > 75 ? "text-emerald-600" : item.relevanceScore > 40 ? "text-indigo-600" : "text-amber-500"
+                          item.relevanceScore > 75 ? "text-emerald-600 dark:text-emerald-400" : item.relevanceScore > 40 ? "text-indigo-600 dark:text-indigo-400" : "text-amber-500 dark:text-amber-400"
                         }`}>
                           {item.relevanceScore}%
                         </span>
@@ -782,72 +886,156 @@ export default function SmartOrganizer({
                 ))}
               </div>
             </div>
-          )}
-
-          {/* Helper details & Dynamic Organisation Schemas with interactive One-Click Move */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h4 className="font-semibold text-slate-800 text-xs flex items-center gap-1.5 mb-3">
-              <HelpCircle className="h-4 w-4 text-slate-400" /> Dynamic Organisation Schemas
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 text-[11px] leading-relaxed text-slate-500">
-              <div className="space-y-1.5 p-3.5 rounded-xl bg-slate-50 border border-slate-100">
-                <strong className="text-slate-700 font-semibold block text-xs">Active Relevance Rating</strong>
-                Files updated frequently are flagged as high score. Stale archives are weighted lower to suggest moving them to an 'Archives' repository folder.
-              </div>
-              
-              <div className="space-y-1.5 p-3.5 rounded-xl bg-slate-50 border border-slate-100">
-                <strong className="text-slate-700 font-semibold block text-xs">Automatic Tags Creation</strong>
-                Metadata tags are appended in secondary layouts. Filter easily using the dropdown at top of core Drive Browser tab views.
-              </div>
-
-              {/* Card for Custom Keyword Priority Rules */}
-              <div className="space-y-2 p-3.5 rounded-xl bg-indigo-50/60 border border-indigo-200/80 transition hover:border-indigo-300">
-                <div className="flex items-center justify-between">
-                  <strong className="text-indigo-950 font-semibold block text-xs flex items-center gap-1">
-                    <Sliders className="h-3.5 w-3.5 text-indigo-600" /> Priority Rules
-                  </strong>
-                  <span className="text-[9.5px] font-mono uppercase bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-bold">
-                    {rules.filter(r => r.enabled !== false).length} Active
-                  </span>
+          ) : !orgPlan && (
+            <div className="rounded-xl border border-indigo-200/90 dark:border-indigo-800/80 bg-white dark:bg-slate-900 p-5 space-y-4 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8 w-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <Zap className="h-4 w-4 fill-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-1.5 font-display">
+                      Autonomous Decision Matrix & Triage Deck
+                    </h3>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                      100% classified · {decisionMetrics.pendingActionsCount} pending triage actions ready for execution
+                    </span>
+                  </div>
                 </div>
-                <p className="text-[11px] text-indigo-900/80">
-                  Custom keywords (e.g., 'Invoice' &rarr; 'Finance') directly dictate AI grouping and folder destinations.
-                </p>
-                <button
-                  id="btn-card-rules-settings"
-                  onClick={() => setIsSettingsOpen(true)}
-                  className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg bg-white border border-indigo-200 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-100/60 active:scale-95 transition cursor-pointer shadow-2xs"
-                >
-                  <Sliders className="h-3 w-3 text-indigo-600" />
-                  <span>Configure Rules</span>
-                </button>
+
+                {pendingDecisions.length > 0 && (
+                  <button
+                    id="btn-execute-all-triage"
+                    onClick={handleExecuteAllTriageDecisions}
+                    disabled={isExecuting}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 text-xs font-semibold shadow-xs hover:shadow-md transition active:scale-95 cursor-pointer disabled:opacity-50"
+                  >
+                    <Zap className="h-3.5 w-3.5 fill-white" />
+                    <span>Execute All Decisions ({pendingDecisions.length})</span>
+                  </button>
+                )}
               </div>
-              
-              {/* Card for One-Click Move Execution with direct trigger button */}
-              <div className="space-y-2 p-3.5 rounded-xl bg-emerald-50/60 border border-emerald-200/80 transition hover:border-emerald-300">
-                <div className="flex items-center justify-between">
-                  <strong className="text-emerald-950 font-semibold block text-xs flex items-center gap-1">
-                    <Zap className="h-3.5 w-3.5 text-emerald-600 fill-emerald-600" /> One-Click Move Execution
-                  </strong>
-                  <span className="text-[9.5px] font-mono uppercase bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded font-bold">
-                    Active
-                  </span>
+
+              {/* Triage Quadrants Summary */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-800">
+                  <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider block">Relocations</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-lg font-bold text-indigo-700 dark:text-indigo-300 font-display">{decisionMetrics.relocationCandidatesCount}</span>
+                    <span className="text-[10px] text-slate-400">items</span>
+                  </div>
                 </div>
-                <p className="text-[11px] text-emerald-900/80">
-                  Plan layouts specify exact directions. Shifting directories performs actual drive transfers inside nested folders seamlessly.
-                </p>
-                <button
-                  id="btn-card-one-click-move"
-                  onClick={handleOneClickMove}
-                  disabled={isExecuting || isPlanning || files.length === 0}
-                  className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 active:scale-95 disabled:opacity-50 transition cursor-pointer shadow-xs"
-                >
-                  <Zap className="h-3 w-3 fill-current" />
-                  <span>Run One-Click Move</span>
-                </button>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-800">
+                  <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider block">Stale Archivals</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-lg font-bold text-amber-700 dark:text-amber-300 font-display">{decisionMetrics.archiveCandidatesCount}</span>
+                    <span className="text-[10px] text-slate-400">&gt;180d</span>
+                  </div>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-800">
+                  <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider block">High Urgency</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-lg font-bold text-rose-700 dark:text-rose-300 font-display">{decisionMetrics.highUrgencyCount}</span>
+                    <span className="text-[10px] text-slate-400">compliance</span>
+                  </div>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-800">
+                  <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider block">Verified in Place</span>
+                  <div className="flex items-baseline gap-1 mt-1">
+                    <span className="text-lg font-bold text-emerald-700 dark:text-emerald-300 font-display">{decisionMetrics.verifiedCount}</span>
+                    <span className="text-[10px] text-slate-400">verified</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Triage Filter Pills */}
+              <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                {(["all", "relocate", "archive", "high-urgency"] as const).map(tab => (
+                  <button
+                    key={tab}
+                    onClick={() => setTriageFilter(tab)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                      triageFilter === tab
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-semibold"
+                        : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 bg-slate-100 dark:bg-slate-800"
+                    }`}
+                  >
+                    {tab === "all" ? `All Pending (${pendingDecisions.length})` :
+                     tab === "relocate" ? `Relocations (${decisionMetrics.relocationCandidatesCount})` :
+                     tab === "archive" ? `Archivals (${decisionMetrics.archiveCandidatesCount})` :
+                     `High Urgency (${decisionMetrics.highUrgencyCount})`}
+                  </button>
+                ))}
+              </div>
+
+              {/* Triage Decision Stream */}
+              <div className="max-h-[380px] overflow-y-auto space-y-2 pr-1">
+                {filteredTriageFiles.map((file, idx) => {
+                  const dec = file.decision;
+                  if (!dec) return null;
+                  return (
+                    <div
+                      key={`triage-${file.id}-${idx}`}
+                      className="p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40 hover:bg-slate-50 dark:hover:bg-slate-800/70 transition space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 space-y-1">
+                          <div className="font-medium text-slate-900 dark:text-slate-100 truncate text-xs">
+                            {file.name}
+                          </div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold ${
+                              dec.decisionType === 'relocate'
+                                ? 'bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800'
+                                : 'bg-amber-50 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800'
+                            }`}>
+                              {dec.decisionType === 'relocate' && <Move className="h-3 w-3" />}
+                              {dec.decisionType === 'archive' && <Archive className="h-3 w-3" />}
+                              {dec.action}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400">
+                              Target: <span className="font-semibold text-slate-700 dark:text-slate-300">/{dec.targetFolder}</span>
+                            </span>
+                            <span className={`text-[10px] font-mono font-semibold px-1.5 py-0.2 rounded ${
+                              dec.urgency === 'high' ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                            }`}>
+                              {dec.urgency.toUpperCase()}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          id={`btn-triage-exec-${file.id}`}
+                          onClick={() => handleExecuteSingleTriage(file)}
+                          disabled={executingSingleId === file.id}
+                          className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 text-xs font-semibold shadow-2xs hover:shadow-xs transition active:scale-95 disabled:opacity-50 cursor-pointer shrink-0"
+                        >
+                          {executingSingleId === file.id ? (
+                            <RefreshCw className="h-3 w-3 animate-spin" />
+                          ) : (
+                            <Zap className="h-3 w-3 fill-white" />
+                          )}
+                          <span>Execute</span>
+                        </button>
+                      </div>
+
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                        {dec.rationale}
+                      </p>
+                    </div>
+                  );
+                })}
+
+                {filteredTriageFiles.length === 0 && (
+                  <div className="py-8 text-center text-slate-400 flex flex-col items-center">
+                    <CheckCircle2 className="h-8 w-8 text-emerald-500 mb-2 opacity-80" />
+                    <p className="text-xs font-medium text-slate-700 dark:text-slate-300">Zero Pending Items</p>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">All files are verified in place or organized.</p>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 

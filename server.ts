@@ -125,6 +125,10 @@ interface GenerateWithResilienceOptions {
   maxRetriesPerModel?: number;
 }
 
+// Cooldown tracker for models that hit 503, 429, or quota exhaustion
+const modelCooldowns = new Map<string, number>();
+const COOLDOWN_DURATION_MS = 60_000; // 60 seconds cooldown before re-probing an overloaded model
+
 /**
  * Resilient Gemini content generator with automatic exponential backoff retry for 503/429
  * and seamless fallback across model pools (e.g., gemini-3.8-flash -> gemini-3.1-flash-lite -> gemini-flash-latest).
@@ -142,10 +146,23 @@ async function generateContentWithResilience(options: GenerateWithResilienceOpti
     throw new Error("GEMINI_API_KEY is not configured in server environment.");
   }
 
-  const modelQueue = [preferredModel, ...fallbackModels.filter(m => m && m !== preferredModel)];
+  const rawQueue = [preferredModel, ...fallbackModels.filter(m => m && m !== preferredModel)];
+  const now = Date.now();
+
+  // Prioritize models that are not in cooldown (e.g., didn't just fail with 503 or 429 quota exhaustion)
+  const healthyModels = rawQueue.filter(m => !modelCooldowns.has(m) || (modelCooldowns.get(m)! <= now));
+  const cooledModels = rawQueue.filter(m => modelCooldowns.has(m) && (modelCooldowns.get(m)! > now));
+  const modelQueue = healthyModels.length > 0 ? [...healthyModels, ...cooledModels] : rawQueue;
+
   let lastError: any = null;
 
   for (const model of modelQueue) {
+    // If model is currently in cooldown and we have other models available, skip it
+    const isCooling = modelCooldowns.has(model) && (modelCooldowns.get(model)! > now);
+    if (isCooling && healthyModels.length > 0) {
+      continue;
+    }
+
     for (let attempt = 0; attempt <= maxRetriesPerModel; attempt++) {
       try {
         const callPromise = ai.models.generateContent({
@@ -157,33 +174,47 @@ async function generateContentWithResilience(options: GenerateWithResilienceOpti
           setTimeout(() => reject(new Error(`Timeout: ${model} call exceeded 12000ms threshold`)), 12000);
         });
         const response: any = await Promise.race([callPromise, timeoutPromise]);
+        
+        // Clear any previous cooldown on successful execution
+        modelCooldowns.delete(model);
         return { response, modelUsed: model };
       } catch (err: any) {
         lastError = err;
         const errMessage = String(err?.message || "").toLowerCase();
         const statusCode = err?.status || err?.code || err?.error?.code;
 
-        const isTransient =
+        const isQuotaOrOverload =
           statusCode === 503 ||
           statusCode === 429 ||
-          statusCode === 500 ||
-          statusCode === 504 ||
           errMessage.includes("503") ||
           errMessage.includes("high demand") ||
           errMessage.includes("unavailable") ||
-          errMessage.includes("rate limit") ||
+          errMessage.includes("quota") ||
           errMessage.includes("resource_exhausted") ||
+          errMessage.includes("rate limit");
+
+        const isTransient =
+          isQuotaOrOverload ||
+          statusCode === 500 ||
+          statusCode === 504 ||
           errMessage.includes("temporarily") ||
           errMessage.includes("timeout");
 
+        if (isQuotaOrOverload) {
+          // Immediately mark model in cooldown so subsequent requests don't waste time on it
+          modelCooldowns.set(model, Date.now() + COOLDOWN_DURATION_MS);
+          console.log(`[Gemini Resilience] Model ${model} is currently at capacity or overloaded (${statusCode || "503/429"}). Switching to fallback model pool...`);
+          break; // Break attempt loop to immediately try next model in modelQueue
+        }
+
         if (isTransient) {
           if (attempt < maxRetriesPerModel) {
-            const delay = Math.min(600 * (attempt + 1) + Math.random() * 200, 1500);
-            console.warn(`[Gemini Resilience] ${model} transient error (${statusCode || "high demand"}). Retrying in ${Math.round(delay)}ms...`);
+            const delay = Math.min(300 * (attempt + 1), 800);
+            console.log(`[Gemini Resilience] Model ${model} temporary status (${statusCode || "retry"}). Re-attempting in ${Math.round(delay)}ms...`);
             await new Promise(r => setTimeout(r, delay));
             continue;
           } else {
-            console.warn(`[Gemini Resilience] ${model} unavailable after retries (${statusCode || "503"}). Switching to fallback model...`);
+            console.log(`[Gemini Resilience] Model ${model} passed retry limit. Switching to fallback model...`);
             break; // Try next model in modelQueue
           }
         }
@@ -685,47 +716,6 @@ Provide a structured, helpful summary suitable for a document preview modal.`;
 });
 
 /**
- * API Endpoint: Generate perfect-fit images using Gemini
- * Accepts prompt, aspectRatio (e.g., '16:9', '9:16')
- */
-app.post("/api/gemini/generate-image", async (req, res) => {
-  try {
-    const { prompt, aspectRatio } = req.body;
-    if (!prompt) return res.status(400).json({ error: "Missing prompt" });
-
-    // Use gemini-3.1-flash-image-preview for image generation
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.1-flash-image-preview',
-      contents: {
-        parts: [{ text: prompt }]
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: aspectRatio || "1:1",
-          imageSize: "1K"
-        }
-      }
-    });
-
-    let imageUrl = "";
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        const base64EncodeString = part.inlineData.data;
-        imageUrl = `data:image/png;base64,${base64EncodeString}`;
-        break;
-      }
-    }
-
-    if (!imageUrl) throw new Error("Image not generated");
-
-    return res.json({ success: true, imageUrl });
-  } catch (error: any) {
-    console.error("Gemini Generate Image Error:", error);
-    return res.status(500).json({ error: error.message || "Failed to generate image." });
-  }
-});
-
-/**
  * API Endpoint: Multi-turn Gemini Chat with role presets and model selection.
  * Models:
  * - gemini-3.8-flash (General tasks / Default)
@@ -769,6 +759,100 @@ app.post("/api/gemini/chat", async (req, res) => {
   } catch (error: any) {
     console.warn("[Gemini Chat] Error processing chat message:", error?.message || error);
     return res.status(500).json({ error: error.message || "Failed to process chat message." });
+  }
+});
+
+/**
+ * API Endpoint: Generate dynamic AI chat suggestions based on active persona and sample files
+ */
+app.post("/api/gemini/chat-suggestions", apiRateLimiter, async (req, res) => {
+  try {
+    const { roleTitle, sampleFiles } = req.body || {};
+    const filesList = Array.isArray(sampleFiles) && sampleFiles.length > 0
+      ? sampleFiles.slice(0, 10).map((name: string) => String(name).slice(0, 80)).join(", ")
+      : "";
+
+    const prompt = `Generate 4 insightful, actionable, and diverse single-sentence prompt suggestions that a user could ask an AI Drive Companion.
+Persona active: "${roleTitle || 'Drive & Storage Specialist'}".
+${filesList ? `User's sample files in Google Drive: <untrusted_sample_files>${filesList}</untrusted_sample_files>` : "User has typical files like invoices, contracts, spreadsheets, project notes, and backups."}
+
+Guidelines:
+1. Each suggestion must be a direct question or prompt (10 to 18 words) that a user would find genuinely helpful.
+2. If files are provided, at least 2 suggestions should mention or refer to organizing, archiving, or auditing those types of files.
+3. Keep prompts natural, concise, and focused on Drive workflows, organization, tasks, or cloud storage strategy.
+4. Return strictly valid JSON matching the schema.`;
+
+    const { response, modelUsed } = await generateContentWithResilience({
+      preferredModel: "gemini-3.8-flash",
+      fallbackModels: ["gemini-3.1-flash-lite", "gemini-flash-latest"],
+      contents: prompt,
+      config: {
+        systemInstruction: "You are an expert prompt engineer for Google Drive and productivity companions. Return clean JSON containing an array of 4 sharp, highly practical prompt questions.",
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            suggestions: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "Array of 4 actionable prompt suggestions."
+            }
+          },
+          required: ["suggestions"]
+        }
+      }
+    });
+
+    const dataText = response.text || "{}";
+    const data = JSON.parse(dataText.trim());
+    const suggestions = Array.isArray(data.suggestions) && data.suggestions.length > 0
+      ? data.suggestions.slice(0, 6)
+      : [
+          "How should I structure folders for personal taxes and invoices?",
+          "Recommend a standard file naming convention for client projects",
+          "What is the best weekly checklist to prevent Google Drive clutter?",
+          "How do I organize shared team documents to avoid accidental deletions?"
+        ];
+
+    return res.json({ success: true, suggestions, modelUsed });
+  } catch (error: any) {
+    console.warn("[Gemini Chat Suggestions] Fallback activated:", error?.message || error);
+    const role = (req.body?.roleTitle || "").toLowerCase();
+    let fallbackSuggestions = [
+      "How should I structure folders for personal taxes and invoices?",
+      "Recommend a standard file naming convention for client projects",
+      "What is the best weekly checklist to prevent Google Drive clutter?",
+      "Design an automated archive strategy for files older than 1 year"
+    ];
+
+    if (role.includes("productivity") || role.includes("task")) {
+      fallbackSuggestions = [
+        "Turn my pending tax invoices and consulting contracts into a weekly task sprint",
+        "Create an executive morning review routine for new incoming drive documents",
+        "How can I set up recurring reminder cycles for critical backups?",
+        "Break down large file cleanup projects into daily 10-minute micro-tasks"
+      ];
+    } else if (role.includes("architect") || role.includes("governance")) {
+      fallbackSuggestions = [
+        "Draft a robust data retention and tiering policy for company documents",
+        "How do I configure Google Drive access controls to prevent accidental data leaks?",
+        "Design a multi-region cloud backup architecture for mission-critical archives",
+        "What are the best enterprise deduplication workflows for Google Workspace?"
+      ];
+    } else if (role.includes("fast")) {
+      fallbackSuggestions = [
+        "Give me a quick 3-step checklist to organize 50 loose files right now",
+        "What are the 5 most common file naming mistakes to avoid?",
+        "Quick summary: how does single-parent folder hierarchy work in Google Drive?",
+        "How can I instantly free up 5GB of cluttered Drive storage?"
+      ];
+    }
+
+    return res.json({
+      success: true,
+      suggestions: fallbackSuggestions,
+      fallback: true
+    });
   }
 });
 

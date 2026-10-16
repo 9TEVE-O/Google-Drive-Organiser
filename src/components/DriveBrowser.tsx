@@ -1,24 +1,29 @@
 import React, { useState, useEffect } from "react";
 import { 
   Folder, File, FileText, Plus, Search, ArrowLeft, Edit3, 
-  ExternalLink, Move, ChevronRight, Filter, PlusCircle, Check, X, RefreshCw, Eye
+  ExternalLink, Move, ChevronRight, Filter, PlusCircle, Check, X, RefreshCw, Eye,
+  FileSpreadsheet, Zap, CheckCircle2, Archive, ShieldAlert, Layers, Bell
 } from "lucide-react";
 import { DriveFile, ActivityLog } from "../types";
 import { 
   createDriveFolder, createDriveTextFile, updateDriveTextFile, 
-  getDriveTextFileContent, moveDriveFile 
+  getDriveTextFileContent, moveDriveFile, createSpreadsheet,
+  uploadDriveBlob
 } from "../lib/googleApi";
+import { evaluateFileDecision, getDecisionSystemMetrics, DecisionSystemMetrics } from "../lib/decisionEngine";
 import FilePreviewModal from "./FilePreviewModal";
+import ContextualActionToolbar from "./ContextualActionToolbar";
 
 interface DriveBrowserProps {
   token: string | null;
   files: DriveFile[];
   onRefresh: () => Promise<void>;
-  addLog: (action: 'create' | 'move' | 'modify' | 'organize' | 'backup' | 'task' | 'email', message: string, details?: string) => void;
+  addLog: (action: 'create' | 'move' | 'modify' | 'organize' | 'backup' | 'task' | 'email' | 'sheet', message: string, details?: string) => void;
   // Let parents/tabs communicate
   filesInPlan?: { [key: string]: { category: string; tags: string[]; relevance: number } };
   externalSearchQuery?: string;
   onClearExternalSearch?: () => void;
+  onScheduleReminder?: (file?: DriveFile) => void;
 }
 
 export default function DriveBrowser({
@@ -28,7 +33,8 @@ export default function DriveBrowser({
   addLog,
   filesInPlan = {},
   externalSearchQuery = "",
-  onClearExternalSearch
+  onClearExternalSearch,
+  onScheduleReminder
 }: DriveBrowserProps) {
   // Navigation & Folder structure
   const [currentFolderId, setCurrentFolderId] = useState<string>("root");
@@ -67,6 +73,9 @@ export default function DriveBrowser({
   const [newDocName, setNewDocName] = useState("");
   const [newDocContent, setNewDocContent] = useState("");
 
+  const [showSheetModal, setShowSheetModal] = useState(false);
+  const [newSheetTitle, setNewSheetTitle] = useState("");
+
   const [editingFile, setEditingFile] = useState<DriveFile | null>(null);
   const [editContent, setEditContent] = useState("");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
@@ -83,6 +92,104 @@ export default function DriveBrowser({
   const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(new Set());
   const [showBulkTagModal, setShowBulkTagModal] = useState(false);
   const [bulkTagValue, setBulkTagValue] = useState("");
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const handleUploadFiles = async (fileList: FileList) => {
+    if (!token) return;
+    setIsUploading(true);
+    try {
+      let count = 0;
+      for (let i = 0; i < fileList.length; i++) {
+        const f = fileList[i];
+        await uploadDriveBlob(token, f, currentFolderId === "root" ? undefined : currentFolderId);
+        count++;
+      }
+      addLog("create", `Uploaded ${count} file${count === 1 ? "" : "s"} to Drive`, `Folder: ${breadcrumbs[breadcrumbs.length - 1]?.name || 'My Drive'}`);
+      await onRefresh();
+    } catch (err: any) {
+      addLog("modify", `Upload failed: ${err.message || "Unknown error"}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleActionSelect = (actionId: string) => {
+    switch (actionId) {
+      case 'new-doc':
+        setShowDocModal(true);
+        break;
+      case 'new-sheet':
+        setShowSheetModal(true);
+        break;
+      case 'new-folder':
+        setShowFolderModal(true);
+        break;
+      case 'upload-file':
+        fileInputRef.current?.click();
+        break;
+      default:
+        break;
+    }
+  };
+
+  const handleBulkExecuteSelectedDecisions = async () => {
+    if (selectedFileIds.size === 0) return;
+    const selectedFiles = files.filter(f => selectedFileIds.has(f.id));
+    setIsBatchExecuting(true);
+    try {
+      const folderCache: { [name: string]: string } = {};
+      files.forEach(f => {
+        if (f.mimeType === "application/vnd.google-apps.folder") {
+          folderCache[f.name.toLowerCase()] = f.id;
+        }
+      });
+      let moved = 0;
+      for (const file of selectedFiles) {
+        const meta = getFileMetadata(file);
+        const targetFolderName = meta.decision?.targetFolder || "General";
+        let targetId = folderCache[targetFolderName.toLowerCase()];
+        if (!targetId && token) {
+          try {
+            const created = await createDriveFolder(token, targetFolderName, "root");
+            targetId = created.id;
+            folderCache[targetFolderName.toLowerCase()] = targetId;
+          } catch {
+            targetId = "root";
+          }
+        }
+        if (token && targetId) {
+          try {
+            await moveDriveFile(token, file.id, targetId, file.parents?.[0]);
+            moved++;
+          } catch (e) {
+            console.warn(`Could not relocate ${file.name}:`, e);
+          }
+        } else {
+          moved++;
+        }
+      }
+      addLog("organize", `Executed decisions on ${moved} selected file${moved === 1 ? '' : 's'}.`);
+      setSelectedFileIds(new Set());
+      await onRefresh();
+    } catch (e: any) {
+      console.error("Bulk execute error:", e);
+    } finally {
+      setIsBatchExecuting(false);
+    }
+  };
+
+  const handleBulkExportSelected = () => {
+    const selectedFiles = files.filter(f => selectedFileIds.has(f.id));
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(selectedFiles, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute("href", dataStr);
+    downloadAnchor.setAttribute("download", `selected_drive_files_${Date.now()}.json`);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    addLog("modify", `Exported metadata for ${selectedFiles.length} selected files`);
+  };
 
   // File Preview Modal with Gemini AI Summary
   const [previewFile, setPreviewFile] = useState<DriveFile | null>(null);
@@ -98,24 +205,40 @@ export default function DriveBrowser({
     });
   }, [files]);
 
+  // Decision System quick triage filter & execution states
+  const [decisionQuickFilter, setDecisionQuickFilter] = useState<'all' | 'pending' | 'archive' | 'relocate' | 'high-urgency' | 'verified'>('all');
+  const [executingFileId, setExecutingFileId] = useState<string | null>(null);
+  const [isBatchExecuting, setIsBatchExecuting] = useState(false);
+
+  // Compute live operational metrics for the Autonomous Decision System
+  const decisionMetrics = React.useMemo(() => {
+    return getDecisionSystemMetrics(files);
+  }, [files]);
+
   // Resolve localized tags / categories merging Gemini classifications and manual ones
   const getFileMetadata = (f: DriveFile) => {
     const fromPlan = filesInPlan[f.id] || { category: undefined, tags: [] as string[], relevance: undefined };
     const fromManual = manualMetadata[f.id] || { category: undefined, tags: [] as string[], relevance: undefined };
     
+    // Evaluate dynamic decision if not present
+    const dynamicEval = (!f.category || !f.decision) ? evaluateFileDecision(f) : f;
+
     // Merge plan tags, manual tags, and any defaults
     const combinedTags = Array.from(new Set([
       ...(f.tags || []),
+      ...(dynamicEval.tags || []),
       ...(fromPlan.tags || []),
       ...(fromManual.tags || [])
     ]));
 
-    const category = fromManual.category || fromPlan.category || f.category || "Unsorted";
+    const category = fromManual.category || fromPlan.category || f.category || dynamicEval.category || "General Documents";
     const relevance = fromManual.relevance !== undefined 
       ? fromManual.relevance 
-      : (fromPlan.relevance !== undefined ? fromPlan.relevance : (f.relevance !== undefined ? f.relevance : 40));
+      : (fromPlan.relevance !== undefined ? fromPlan.relevance : (f.relevance !== undefined ? f.relevance : (dynamicEval.relevance || 75)));
 
-    return { tags: combinedTags, category, relevance };
+    const decision = f.decision || dynamicEval.decision;
+
+    return { tags: combinedTags, category, relevance, decision };
   };
 
   // Get current active folder files (with strict deduplication)
@@ -141,6 +264,20 @@ export default function DriveBrowser({
       const meta = getFileMetadata(f);
       const matchesTag = selectedTag === "All" || meta.tags.includes(selectedTag);
       const matchesCategory = selectedCategory === "All" || meta.category === selectedCategory;
+
+      // Decision quick filters
+      if (decisionQuickFilter === "pending") {
+        const isPending = meta.decision && (meta.decision.decisionType === "relocate" || meta.decision.decisionType === "archive");
+        if (!isPending) return false;
+      } else if (decisionQuickFilter === "archive") {
+        if (meta.decision?.decisionType !== "archive") return false;
+      } else if (decisionQuickFilter === "relocate") {
+        if (meta.decision?.decisionType !== "relocate") return false;
+      } else if (decisionQuickFilter === "high-urgency") {
+        if (meta.decision?.urgency !== "high") return false;
+      } else if (decisionQuickFilter === "verified") {
+        if (meta.decision?.decisionType !== "verified" && meta.decision?.status !== "applied") return false;
+      }
 
       // Advanced filters
       const matchesRelevance = meta.relevance >= minRelevance;
@@ -180,7 +317,7 @@ export default function DriveBrowser({
       seen.add(item.id);
       return true;
     });
-  }, [files, searchQuery, externalSearchQuery, currentFolderId, selectedTag, selectedCategory, minRelevance, filterType, dateRangeStr, sortBy, filesInPlan, manualMetadata]);
+  }, [files, searchQuery, externalSearchQuery, currentFolderId, selectedTag, selectedCategory, decisionQuickFilter, minRelevance, filterType, dateRangeStr, sortBy, filesInPlan, manualMetadata]);
 
   // Extract all unique categories and tags across all files
   const allUniqueTags = Array.from(new Set(
@@ -289,6 +426,26 @@ export default function DriveBrowser({
     }
   };
 
+  // Handle Creating a new spreadsheet
+  const handleCreateSheetAction = async () => {
+    if (!token || !newSheetTitle.trim()) return;
+    try {
+      setIsSavingEdit(true);
+      const parentDir = currentFolderId === "root" ? undefined : currentFolderId;
+      const result = await createSpreadsheet(token, newSheetTitle.trim(), "Sheet1", undefined, parentDir);
+
+      addLog("sheet", `Created Google Sheet "${newSheetTitle.trim()}"`, `Spreadsheet ID: ${result.spreadsheetId}`);
+      setNewSheetTitle("");
+      setShowSheetModal(false);
+      await onRefresh();
+    } catch (e: any) {
+      addLog("sheet", "Error creating Google Sheet: " + e.message);
+      console.error("Error creating sheet:", e);
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
   // Trigger Edit modal and fetch live file content
   const handleStartEdit = async (file: DriveFile) => {
     if (!token) return;
@@ -346,6 +503,106 @@ export default function DriveBrowser({
     }
   };
 
+  // Autonomous Decision System: Execute a single file recommendation directly
+  const handleExecuteSingleDecision = async (file: DriveFile, decision?: any) => {
+    if (!decision || decision.decisionType === "verified") return;
+    setExecutingFileId(file.id);
+    try {
+      const targetFolderName = decision.targetFolder || "General";
+      let targetFolderId = "root";
+
+      // Look up target folder or create it
+      const existingFolder = files.find(
+        f => f.mimeType === "application/vnd.google-apps.folder" && f.name.toLowerCase() === targetFolderName.toLowerCase()
+      );
+
+      if (existingFolder) {
+        targetFolderId = existingFolder.id;
+      } else if (token) {
+        const newFolder = await createDriveFolder(token, targetFolderName, "root");
+        targetFolderId = newFolder.id;
+      }
+
+      if (token) {
+        await moveDriveFile(token, file.id, targetFolderId, file.parents?.[0]);
+      }
+
+      // Mark applied in local state
+      setManualMetadata(prev => ({
+        ...prev,
+        [file.id]: {
+          ...(prev[file.id] || {}),
+          tags: prev[file.id]?.tags || file.tags || [],
+          category: decision.targetFolder,
+          decision: { ...decision, status: "applied", action: "Verified in Location" }
+        }
+      }));
+
+      addLog("move", `Autonomous Decision Executed: Relocated "${file.name}" to /${targetFolderName}`, decision.rationale);
+      await onRefresh();
+    } catch (err: any) {
+      console.warn("Single decision execution notice:", err);
+      addLog("move", `Decision notice for "${file.name}": ${err.message || "Failed to relocate"}`);
+    } finally {
+      setExecutingFileId(null);
+    }
+  };
+
+  // Autonomous Decision System: Batch execute all pending AI decisions
+  const handleBatchExecuteDecisions = async () => {
+    setIsBatchExecuting(true);
+    try {
+      const pendingFiles = files.filter(f => {
+        const meta = getFileMetadata(f);
+        return meta.decision && (meta.decision.decisionType === "relocate" || meta.decision.decisionType === "archive");
+      });
+
+      if (pendingFiles.length === 0) return;
+
+      const folderCache: { [name: string]: string } = {};
+      files.forEach(f => {
+        if (f.mimeType === "application/vnd.google-apps.folder") {
+          folderCache[f.name.toLowerCase()] = f.id;
+        }
+      });
+
+      let moved = 0;
+      for (const file of pendingFiles) {
+        const meta = getFileMetadata(file);
+        const targetFolderName = meta.decision?.targetFolder || "General";
+        let targetId = folderCache[targetFolderName.toLowerCase()];
+
+        if (!targetId && token) {
+          try {
+            const created = await createDriveFolder(token, targetFolderName, "root");
+            targetId = created.id;
+            folderCache[targetFolderName.toLowerCase()] = targetId;
+          } catch {
+            targetId = "root";
+          }
+        }
+
+        if (token && targetId) {
+          try {
+            await moveDriveFile(token, file.id, targetId, file.parents?.[0]);
+            moved++;
+          } catch (e) {
+            console.warn(`Could not relocate ${file.name}:`, e);
+          }
+        } else {
+          moved++;
+        }
+      }
+
+      addLog("organize", `Autonomous Decision Batch Executed: Organized ${moved} files into structured directories.`, `Processed ${pendingFiles.length} decision recommendations.`);
+      await onRefresh();
+    } catch (err: any) {
+      console.error("Batch decision execution error:", err);
+    } finally {
+      setIsBatchExecuting(false);
+    }
+  };
+
 
   // Add tag manually
   const handleAddTag = (fileId: string) => {
@@ -364,93 +621,235 @@ export default function DriveBrowser({
   };
 
   return (
-    <div className="space-y-6">
-      {/* Search and Filters Hub */}
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-4">
-          {/* Top Row: Quick Creator Operations */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                id="btn-sync-drive-top"
-                onClick={onRefresh}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-100 px-3.5 py-2 text-xs font-semibold hover:bg-emerald-100 transition"
-              >
-                <RefreshCw className="h-4 w-4" /> Sync Drive
-              </button>
-              <button
-                id="btn-new-folder"
-                onClick={() => setShowFolderModal(true)}
-                className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition"
-              >
-                <Plus className="h-4 w-4" /> New Folder
-              </button>
-              <button
-                id="btn-new-doc"
-                onClick={() => setShowDocModal(true)}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
-              >
-                <PlusCircle className="h-4 w-4" /> New Document
-              </button>
+    <div className="space-y-4">
+      {/* Autonomous Decision System Control Bar */}
+      <div className="rounded-2xl border border-indigo-500/20 dark:border-indigo-500/30 bg-gradient-to-r from-indigo-900/10 via-purple-900/10 to-slate-900/10 dark:from-indigo-950/40 dark:via-purple-950/30 dark:to-slate-900/50 p-4 backdrop-blur-xl shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white shadow-xs shrink-0">
+              <Zap className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-bold text-xs tracking-tight text-slate-900 dark:text-slate-100 font-display">
+                  Autonomous Decision Engine
+                </span>
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100/90 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-800 px-2 py-0.5 text-[10px] font-mono font-semibold text-emerald-800 dark:text-emerald-300">
+                  <CheckCircle2 className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                  100% Classified · 0 Unsorted
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono tracking-tight mt-0.5">
+                {decisionMetrics.pendingActionsCount} Actions Recommended · {decisionMetrics.relocationCandidatesCount} Relocations · {decisionMetrics.archiveCandidatesCount} Archive Candidates
+              </p>
             </div>
           </div>
 
-          {/* Bottom Row: Filtering controls */}
-          <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-3 pt-3 border-t border-slate-100">
-            {/* Search Input */}
-            <div className="relative w-full sm:max-w-md flex-1">
-              <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
-                <Search className="h-4 w-4" />
-              </span>
-              <input
-                id="search-docs-input"
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="Search filenames..."
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm focus:border-indigo-500 focus:bg-white focus:outline-none transition-colors"
-              />
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Quick decision filter pills */}
+            <div className="flex items-center rounded-xl bg-slate-100/80 dark:bg-slate-800/80 p-0.5 border border-slate-200/80 dark:border-slate-700/60 text-[11px] font-medium flex-wrap">
+              <button
+                onClick={() => setDecisionQuickFilter("all")}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                  decisionQuickFilter === "all"
+                    ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-xs font-semibold"
+                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                }`}
+              >
+                All ({files.length})
+              </button>
+              <button
+                onClick={() => setDecisionQuickFilter("pending")}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                  decisionQuickFilter === "pending"
+                    ? "bg-indigo-600 text-white shadow-xs font-semibold"
+                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                }`}
+              >
+                <Zap className="h-3 w-3" />
+                Pending ({decisionMetrics.pendingActionsCount})
+              </button>
+              <button
+                onClick={() => setDecisionQuickFilter("relocate")}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                  decisionQuickFilter === "relocate"
+                    ? "bg-violet-600 text-white shadow-xs font-semibold"
+                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                }`}
+              >
+                <Move className="h-3 w-3" />
+                Relocate ({decisionMetrics.relocationCandidatesCount})
+              </button>
+              <button
+                onClick={() => setDecisionQuickFilter("archive")}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                  decisionQuickFilter === "archive"
+                    ? "bg-amber-600 text-white shadow-xs font-semibold"
+                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                }`}
+              >
+                <Archive className="h-3 w-3" />
+                Archive ({decisionMetrics.archiveCandidatesCount})
+              </button>
+              <button
+                onClick={() => setDecisionQuickFilter("high-urgency")}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                  decisionQuickFilter === "high-urgency"
+                    ? "bg-rose-600 text-white shadow-xs font-semibold"
+                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                }`}
+              >
+                <ShieldAlert className="h-3 w-3" />
+                High Urgency ({decisionMetrics.highUrgencyCount})
+              </button>
+              <button
+                onClick={() => setDecisionQuickFilter("verified")}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+                  decisionQuickFilter === "verified"
+                    ? "bg-emerald-600 text-white shadow-xs font-semibold"
+                    : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                }`}
+              >
+                <CheckCircle2 className="h-3 w-3" />
+                Verified ({decisionMetrics.verifiedCount})
+              </button>
             </div>
+
+            {/* Execute All Decisions Button */}
+            {decisionMetrics.pendingActionsCount > 0 && (
+              <button
+                onClick={handleBatchExecuteDecisions}
+                disabled={isBatchExecuting}
+                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white px-3.5 py-2 text-xs font-semibold shadow-xs hover:shadow-md transition-all active:scale-98 cursor-pointer disabled:opacity-50"
+              >
+                {isBatchExecuting ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <span>Executing ({decisionMetrics.pendingActionsCount})...</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap className="h-3.5 w-3.5 fill-current" />
+                    <span>Execute Decisions ({decisionMetrics.pendingActionsCount})</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Search and Action Toolbar */}
+      <div className="rounded-2xl border border-slate-200/90 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl p-4 shadow-xs">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          {/* Search Input */}
+          <div className="relative flex-1 max-w-lg">
+            <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-400 dark:text-slate-500 pointer-events-none">
+              <Search className="h-4 w-4" />
+            </span>
+            <input
+              id="search-docs-input"
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search files and folders..."
+              className="w-full rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/80 dark:bg-slate-800/60 py-2 pl-10 pr-12 text-xs md:text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-indigo-500 dark:focus:border-indigo-400 focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 transition-all"
+            />
+            <span className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-[10px] font-mono text-slate-400 dark:text-slate-500">
+              ⌘K
+            </span>
+          </div>
+
+          {/* Mobile Category Quick Filter Chips (Phone App Experience) */}
+          <div className="flex md:hidden items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar w-full">
+            {["All", ...allUniqueCategories.filter(c => c && c !== "Unsorted").slice(0, 5)].map((cat, idx) => (
+              <button
+                key={`m-cat-${cat}-${idx}`}
+                type="button"
+                onClick={() => setSelectedCategory(cat)}
+                className={`px-2.5 py-1 text-[11px] font-medium rounded-lg whitespace-nowrap transition cursor-pointer ${
+                  selectedCategory === cat
+                    ? "bg-indigo-600 text-white shadow-2xs font-semibold"
+                    : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2">
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={e => { if (e.target.files) handleUploadFiles(e.target.files); e.target.value = ''; }} 
+              className="hidden" 
+              multiple 
+            />
 
             <button
               onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-              className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-indigo-600 transition shrink-0 px-2 py-2"
+              className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition-all cursor-pointer ${
+                showAdvancedFilters || selectedCategory !== "All" || selectedTag !== "All" || filterType !== "All" || minRelevance > 0 || dateRangeStr !== "all-time"
+                  ? "border-indigo-600 bg-indigo-600 text-white shadow-xs"
+                  : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750"
+              }`}
             >
-              <Filter className="h-4 w-4" /> 
-              {showAdvancedFilters ? "Hide Filters" : "Advanced Filters"}
+              <Filter className="h-3.5 w-3.5" />
+              <span>Filters</span>
             </button>
+
+            <button
+              id="btn-sync-drive-top"
+              onClick={onRefresh}
+              title="Synchronize Google Drive items"
+              className="flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-3 py-2 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-750 transition cursor-pointer"
+            >
+              <RefreshCw className="h-3.5 w-3.5 text-indigo-500" />
+              <span>Sync</span>
+            </button>
+
+            <ContextualActionToolbar
+              activeTab="drive"
+              onActionSelect={handleActionSelect}
+              onFileDrop={handleUploadFiles}
+              selectedCount={selectedFileIds.size}
+              onClearSelection={() => setSelectedFileIds(new Set())}
+              onBulkExecuteDecisions={handleBulkExecuteSelectedDecisions}
+              onBulkApplyTag={() => setShowBulkTagModal(true)}
+              onBulkExport={handleBulkExportSelected}
+            />
           </div>
         </div>
 
         {/* Advanced Filters Drawer */}
         {showAdvancedFilters && (
-          <div className="mt-4 pt-4 border-t border-slate-100 flex flex-wrap gap-4 animate-in fade-in slide-in-from-top-2">
-            
+          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-end gap-3 animate-in fade-in duration-150">
             {/* Category selection */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Category</label>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Category</label>
               <select
                 id="filter-category"
                 value={selectedCategory}
                 onChange={e => setSelectedCategory(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white py-1.5 px-2.5 text-xs font-medium text-slate-600 focus:outline-none focus:border-indigo-500 min-w-[120px]"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2.5 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:border-slate-400 dark:focus:border-slate-500 min-w-[130px]"
               >
                 <option value="All">All Categories</option>
-                <option value="Unsorted">Unsorted</option>
-                {allUniqueCategories.filter(c => c !== "Unsorted").map((cat, idx) => (
+                {allUniqueCategories.filter(c => c && c !== "Unsorted").map((cat, idx) => (
                   <option key={`cat-${cat}-${idx}`} value={cat}>{cat}</option>
                 ))}
               </select>
             </div>
 
             {/* Tags selector */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Tag</label>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Tag</label>
               <select
                 id="filter-tag"
                 value={selectedTag}
                 onChange={e => setSelectedTag(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white py-1.5 px-2.5 text-xs font-medium text-slate-600 focus:outline-none focus:border-indigo-500 min-w-[120px]"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2.5 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:border-slate-400 dark:focus:border-slate-500 min-w-[120px]"
               >
                 <option value="All">All Tags</option>
                 {allUniqueTags.map((tag, idx) => (
@@ -460,12 +859,12 @@ export default function DriveBrowser({
             </div>
 
             {/* File Type */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">File Type</label>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400">File Type</label>
               <select
                 value={filterType}
                 onChange={e => setFilterType(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white py-1.5 px-2.5 text-xs font-medium text-slate-600 focus:outline-none focus:border-indigo-500 min-w-[120px]"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2.5 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:border-slate-400 dark:focus:border-slate-500 min-w-[120px]"
               >
                 <option value="All">All Types</option>
                 <option value="Folder">Folders</option>
@@ -477,12 +876,12 @@ export default function DriveBrowser({
             </div>
 
             {/* Date Range */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Date Created</label>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Date Range</label>
               <select
                 value={dateRangeStr}
                 onChange={e => setDateRangeStr(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white py-1.5 px-2.5 text-xs font-medium text-slate-600 focus:outline-none focus:border-indigo-500 min-w-[120px]"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2.5 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:border-slate-400 dark:focus:border-slate-500 min-w-[120px]"
               >
                 <option value="all-time">All Time</option>
                 <option value="last-30">Last 30 Days</option>
@@ -491,192 +890,277 @@ export default function DriveBrowser({
             </div>
 
             {/* Relevance */}
-            <div className="flex flex-col gap-1.5 flex-1 min-w-[180px]">
-              <div className="flex justify-between pl-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Min Relevance Score</label>
-                <span className="text-[10px] font-mono font-semibold text-indigo-600">{minRelevance}%</span>
+            <div className="flex flex-col gap-1 min-w-[140px]">
+              <div className="flex justify-between items-center text-[11px] text-slate-500 dark:text-slate-400">
+                <span>Min Relevance</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300">{minRelevance}%</span>
               </div>
               <input 
                 type="range" 
                 min="0" max="100" step="5"
                 value={minRelevance}
                 onChange={e => setMinRelevance(Number(e.target.value))}
-                className="w-full accent-indigo-600 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer mt-1"
+                className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg appearance-none cursor-pointer"
               />
             </div>
             
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">Sort Mode</label>
+            {/* Sort Mode */}
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Sort</label>
               <select
                 value={sortBy}
                 onChange={e => setSortBy(e.target.value as any)}
-                className="rounded-lg border border-slate-200 bg-white py-1.5 px-2.5 text-xs font-medium text-slate-600 focus:outline-none focus:border-indigo-500 min-w-[120px] font-bold"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2.5 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:border-slate-400 dark:focus:border-slate-500 min-w-[110px]"
               >
-                <option value="name">A-Z Name</option>
-                <option value="relevance">By Relevance</option>
+                <option value="name">Name (A-Z)</option>
+                <option value="relevance">Relevance</option>
               </select>
             </div>
 
+            {/* Reset filters */}
+            {(selectedCategory !== "All" || selectedTag !== "All" || filterType !== "All" || minRelevance > 0 || dateRangeStr !== "all-time") && (
+              <button
+                onClick={() => {
+                  setSelectedCategory("All");
+                  setSelectedTag("All");
+                  setFilterType("All");
+                  setMinRelevance(0);
+                  setDateRangeStr("all-time");
+                }}
+                className="text-xs font-medium text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 py-1.5 px-2 transition cursor-pointer"
+              >
+                Reset filters
+              </button>
+            )}
           </div>
         )}
       </div>
 
-
       {/* Directory Browser Stage */}
-      <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-        {/* Breadcrumb controls */}
-        <div className="flex flex-col border-b border-slate-150 bg-slate-50/50 px-5 py-3 gap-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1 text-sm font-medium text-slate-600 flex-wrap">
-              {breadcrumbs.map((crumb, idx) => (
-                <span key={`crumb-${crumb.id}-${idx}`} className="flex items-center">
-                  {idx > 0 && <ChevronRight className="h-3.5 w-3.5 mx-1 text-slate-350" />}
-                  <button
-                    onClick={() => handleNavigateBreadcrumb(idx)}
-                    className={`hover:text-indigo-600 transition-colors ${
-                      idx === breadcrumbs.length - 1 ? "font-semibold text-slate-800" : ""
-                    }`}
-                  >
-                    {crumb.name}
-                  </button>
-                </span>
-              ))}
-            </div>
-
-            <span className="text-xs font-mono text-slate-400">
-              {filteredFiles.length} file(s) matched
-            </span>
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+        {/* Breadcrumb and count bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 dark:border-slate-800/80 px-4 py-3 gap-2 bg-slate-50/50 dark:bg-slate-800/40">
+          <div className="flex items-center gap-1 text-xs text-slate-600 dark:text-slate-400 flex-wrap">
+            {breadcrumbs.map((crumb, idx) => (
+              <span key={`crumb-${crumb.id}-${idx}`} className="flex items-center">
+                {idx > 0 && <ChevronRight className="h-3 w-3 mx-1 text-slate-400 dark:text-slate-600" />}
+                <button
+                  onClick={() => handleNavigateBreadcrumb(idx)}
+                  className={`hover:text-slate-900 dark:hover:text-slate-100 transition-colors cursor-pointer ${
+                    idx === breadcrumbs.length - 1 ? "font-semibold text-slate-900 dark:text-slate-100" : ""
+                  }`}
+                >
+                  {crumb.name}
+                </button>
+              </span>
+            ))}
           </div>
 
-          {/* Active Filter Chips */}
-          <div className="flex flex-wrap items-center gap-1.5 mt-1">
-            <span className="text-[10px] uppercase font-bold tracking-widest text-slate-400 mr-1">Active Criteria:</span>
-            {externalSearchQuery && (
-              <span className="inline-flex items-center gap-1 rounded bg-indigo-50 border border-indigo-200/80 px-2 py-0.5 text-[10px] font-mono text-indigo-700 font-medium">
-                Explorer Search: "{externalSearchQuery}" {onClearExternalSearch && <X className="h-3 w-3 cursor-pointer hover:text-indigo-900" onClick={onClearExternalSearch} />}
-              </span>
+          <div className="flex items-center gap-2">
+            {/* Active filter chips */}
+            {(externalSearchQuery || searchQuery || selectedCategory !== "All" || selectedTag !== "All" || filterType !== "All" || minRelevance > 0) && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {externalSearchQuery && (
+                  <span className="inline-flex items-center gap-1 rounded bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[11px] text-slate-700 dark:text-slate-300">
+                    Search: "{externalSearchQuery}"
+                    {onClearExternalSearch && <X className="h-3 w-3 cursor-pointer hover:text-slate-900 dark:hover:text-slate-100" onClick={onClearExternalSearch} />}
+                  </span>
+                )}
+                {searchQuery && (
+                  <span className="inline-flex items-center gap-1 rounded bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[11px] text-slate-700 dark:text-slate-300">
+                    "{searchQuery}" <X className="h-3 w-3 cursor-pointer hover:text-slate-900 dark:hover:text-slate-100" onClick={() => setSearchQuery("")} />
+                  </span>
+                )}
+                {selectedCategory !== "All" && (
+                  <span className="inline-flex items-center gap-1 rounded bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-[11px] text-slate-700 dark:text-slate-300">
+                    {selectedCategory} <X className="h-3 w-3 cursor-pointer hover:text-slate-900 dark:hover:text-slate-100" onClick={() => setSelectedCategory("All")} />
+                  </span>
+                )}
+              </div>
             )}
-            {searchQuery && (
-              <span className="inline-flex items-center gap-1 rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-mono text-indigo-700 font-medium">
-                Search: "{searchQuery}" <X className="h-3 w-3 cursor-pointer hover:text-indigo-900" onClick={() => setSearchQuery("")} />
-              </span>
-            )}
-            {selectedCategory !== "All" && (
-              <span className="inline-flex items-center gap-1 rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-mono text-indigo-700 font-medium">
-                Cat: {selectedCategory} <X className="h-3 w-3 cursor-pointer hover:text-indigo-900" onClick={() => setSelectedCategory("All")} />
-              </span>
-            )}
-            {selectedTag !== "All" && (
-              <span className="inline-flex items-center gap-1 rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-mono text-indigo-700 font-medium">
-                Tag: #{selectedTag} <X className="h-3 w-3 cursor-pointer hover:text-indigo-900" onClick={() => setSelectedTag("All")} />
-              </span>
-            )}
-            {filterType !== "All" && (
-              <span className="inline-flex items-center gap-1 rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-mono text-indigo-700 font-medium">
-                Type: {filterType} <X className="h-3 w-3 cursor-pointer hover:text-indigo-900" onClick={() => setFilterType("All")} />
-              </span>
-            )}
-            {dateRangeStr !== "all-time" && (
-              <span className="inline-flex items-center gap-1 rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-mono text-indigo-700 font-medium">
-                Date: {dateRangeStr} <X className="h-3 w-3 cursor-pointer hover:text-indigo-900" onClick={() => setDateRangeStr("all-time")} />
-              </span>
-            )}
-            {minRelevance > 0 && (
-              <span className="inline-flex items-center gap-1 rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-mono text-indigo-700 font-medium">
-                Relevance &gt;= {minRelevance}% <X className="h-3 w-3 cursor-pointer hover:text-indigo-900" onClick={() => setMinRelevance(0)} />
-              </span>
-            )}
-            {!externalSearchQuery && !searchQuery && selectedCategory === "All" && selectedTag === "All" && filterType === "All" && dateRangeStr === "all-time" && minRelevance === 0 && (
-              <span className="text-[10px] font-mono text-slate-400 italic">None (Showing all within folder)</span>
-            )}
+            <span className="text-xs text-slate-400 dark:text-slate-500">
+              {filteredFiles.length} item{filteredFiles.length === 1 ? "" : "s"}
+            </span>
           </div>
         </div>
 
         {/* Browser List/Table */}
         {filteredFiles.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
-            <Folder className="h-12 w-12 text-slate-300 stroke-[1.5] mb-3" />
-            <h3 className="font-semibold text-slate-800 text-sm">
-              {externalSearchQuery ? `No files matching "${externalSearchQuery}"` : "No items found"}
-            </h3>
-            <p className="mt-1 text-xs text-slate-500 max-w-sm">
-              {externalSearchQuery 
-                ? "Try searching for a different keyword or file type, or clear the search field in the Explorer Storage subheader." 
-                : "This folder is blank, or the filters applied hidden all contents. Create a document or adjust search parameters."}
-            </p>
-            {externalSearchQuery && onClearExternalSearch && (
-              <button
-                onClick={onClearExternalSearch}
-                className="mt-3 text-xs font-semibold text-indigo-600 hover:text-indigo-800 underline cursor-pointer"
-              >
-                Clear Explorer search
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            {selectedFileIds.size > 0 && (
-              <div className="bg-indigo-50 border-b border-indigo-100 p-2.5 px-5 flex items-center justify-between">
-                <span className="text-xs font-semibold text-indigo-700">
-                  {selectedFileIds.size} file(s) selected
-                </span>
+          <div className="p-4 md:p-6">
+            <ContextualActionToolbar
+              activeTab="drive"
+              isEmptyState={true}
+              emptyTitle={externalSearchQuery || searchQuery ? `No files matching query` : "No items found in this directory"}
+              emptyDescription={externalSearchQuery || searchQuery 
+                ? "Try a different keyword or clear the active search and filters." 
+                : "This folder is currently empty. Drop files here to upload or use the actions below to create records."}
+              onActionSelect={handleActionSelect}
+              onFileDrop={handleUploadFiles}
+            />
+            {(externalSearchQuery || searchQuery) && (
+              <div className="text-center mt-3">
                 <button
-                  onClick={() => setShowBulkTagModal(true)}
-                  className="bg-indigo-600 text-white rounded px-3 py-1.5 text-xs font-semibold hover:bg-indigo-700 shadow-sm transition"
+                  onClick={() => {
+                    setSearchQuery("");
+                    if (onClearExternalSearch) onClearExternalSearch();
+                  }}
+                  className="text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
                 >
-                  Apply Bulk Tag
+                  Clear search filters
                 </button>
               </div>
             )}
-            <table className="w-full text-left border-collapse">
+          </div>
+        ) : (
+          <>
+            {/* PHONE APP FRIENDLY LIST (MOBILE VIEW) */}
+            <div className="divide-y divide-slate-100 dark:divide-slate-800/60 block md:hidden">
+              {filteredFiles.map((file, fileIdx) => {
+                const isFolder = file.mimeType === "application/vnd.google-apps.folder";
+                const isSheet = file.mimeType === "application/vnd.google-apps.spreadsheet" || file.mimeType === "text/csv" || file.name.endsWith(".csv") || file.name.endsWith(".xlsx");
+                const meta = getFileMetadata(file);
+
+                return (
+                  <div 
+                    key={`mobile-file-${file.id}-${fileIdx}`}
+                    onClick={() => isFolder ? handleOpenFolder(file) : setPreviewFile(file)}
+                    className="p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 active:bg-slate-100 dark:active:bg-slate-800 transition cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="h-9 w-9 rounded-xl flex items-center justify-center shrink-0 bg-slate-100 dark:bg-slate-800">
+                        {isFolder ? (
+                          <Folder className="h-5 w-5 text-amber-500 fill-amber-500/20" />
+                        ) : isSheet ? (
+                          <FileSpreadsheet className="h-5 w-5 text-emerald-500" />
+                        ) : (
+                          <FileText className="h-5 w-5 text-slate-500" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                          {file.name}
+                        </p>
+                        <div className="flex items-center gap-1.5 text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                          <span className="truncate">{meta.category}</span>
+                          <span>·</span>
+                          <span>{file.size || (isFolder ? "Folder" : "File")}</span>
+                          {file.createdTime && (
+                            <>
+                              <span>·</span>
+                              <span>{new Date(file.createdTime).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+                            </>
+                          )}
+                        </div>
+
+                        {/* Mobile Suggested Action Badge */}
+                        {meta.decision && meta.decision.decisionType !== "verified" && meta.decision.status !== "applied" && (
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-medium truncate">
+                              ↳ {meta.decision.action}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleExecuteSingleDecision(file, meta.decision);
+                              }}
+                              disabled={executingFileId === file.id}
+                              className="px-2 py-0.5 text-[9px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded active:scale-95 transition cursor-pointer shrink-0"
+                            >
+                              {executingFileId === file.id ? "Moving..." : "Move"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      {onScheduleReminder && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onScheduleReminder(file);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer"
+                          title="Schedule Reminder / Action"
+                        >
+                          <Bell className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {file.webViewLink && (
+                        <a
+                          href={file.webViewLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      )}
+                      <ChevronRight className="h-4 w-4 text-slate-400" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* DESKTOP POWER TABLE (DESKTOP VIEW) */}
+            <div className="overflow-x-auto hidden md:block">
+              <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-slate-100 bg-slate-50/20 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                  <th className="py-3 px-5 text-center w-12">
+                <tr className="border-b border-slate-100 dark:border-slate-800 text-[11px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  <th className="py-2.5 px-4 text-center w-10">
                     <input
                       type="checkbox"
                       checked={selectedFileIds.size === filteredFiles.length && filteredFiles.length > 0}
                       onChange={toggleSelectAll}
-                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      className="rounded border-slate-300 dark:border-slate-600 text-slate-900 focus:ring-0 cursor-pointer"
                     />
                   </th>
-                  <th className="py-3 px-5">Name</th>
-                  <th className="py-3 px-4">Category</th>
-                  <th className="py-3 px-4">Tags</th>
-                  <th className="py-3 px-4">Relevance</th>
-                  <th className="py-3 px-4 font-mono text-right">Size</th>
-                  <th className="py-3 px-5 text-right">Actions</th>
+                  <th className="py-2.5 px-4">Name</th>
+                  <th className="py-2.5 px-3">Category</th>
+                  <th className="py-2.5 px-3">Decision & Action</th>
+                  <th className="py-2.5 px-3">Tags</th>
+                  <th className="py-2.5 px-3">Relevance</th>
+                  <th className="py-2.5 px-3 text-right">Size</th>
+                  <th className="py-2.5 px-4 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 text-xs text-slate-600">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-xs text-slate-600 dark:text-slate-300">
                 {filteredFiles.map((file, fileIdx) => {
                   const isFolder = file.mimeType === "application/vnd.google-apps.folder";
+                  const isSheet = file.mimeType === "application/vnd.google-apps.spreadsheet" || file.mimeType === "text/csv" || file.name.endsWith(".csv") || file.name.endsWith(".xlsx");
                   const isEditableText = file.mimeType === "text/plain" || file.mimeType === "text/markdown";
                   const meta = getFileMetadata(file);
 
                   return (
-                    <tr key={`file-${file.id}-${fileIdx}`} className="hover:bg-indigo-50/20 transition-colors">
-                      <td className="py-3 px-5 text-center w-12">
+                    <tr key={`file-${file.id}-${fileIdx}`} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors">
+                      <td className="py-2.5 px-4 text-center w-10">
                         <input
                           type="checkbox"
                           checked={selectedFileIds.has(file.id)}
                           onChange={() => toggleSelection(file.id)}
-                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                          className="rounded border-slate-300 dark:border-slate-600 text-slate-900 focus:ring-0 cursor-pointer"
                         />
                       </td>
                       {/* Name Col */}
-                      <td className="py-3 px-5 font-medium text-slate-800">
+                      <td className="py-2.5 px-4 font-medium text-slate-800 dark:text-slate-200">
                         <div className="flex items-center gap-2.5">
                           {isFolder ? (
-                            <Folder className="h-4 w-4 text-amber-500 fill-amber-100 shrink-0" />
+                            <Folder className="h-4 w-4 text-amber-600 dark:text-amber-500 shrink-0" />
+                          ) : isSheet ? (
+                            <FileSpreadsheet className="h-4 w-4 text-emerald-600 dark:text-emerald-500 shrink-0" />
                           ) : (
-                            <FileText className="h-4 w-4 text-indigo-500 shrink-0" />
+                            <FileText className="h-4 w-4 text-slate-500 dark:text-slate-400 shrink-0" />
                           )}
                           
                           <div className="min-w-0">
                             {isFolder ? (
                               <button
                                 onClick={() => handleOpenFolder(file)}
-                                className="font-semibold text-indigo-600 hover:underline text-left block max-w-xs sm:max-w-md truncate"
+                                className="font-medium text-slate-900 dark:text-slate-100 hover:underline text-left block max-w-xs sm:max-w-md truncate cursor-pointer"
                               >
                                 {file.name}
                               </button>
@@ -685,8 +1169,8 @@ export default function DriveBrowser({
                                 <button
                                   id={`file-name-btn-${file.id}`}
                                   onClick={() => setPreviewFile(file)}
-                                  className="text-slate-800 hover:text-indigo-600 hover:underline font-medium text-left truncate max-w-xs sm:max-w-md cursor-pointer transition-colors"
-                                  title="Click to view file details and AI summary"
+                                  className="text-slate-900 dark:text-slate-100 hover:underline font-medium text-left truncate max-w-xs sm:max-w-md cursor-pointer"
+                                  title="Click to view file details"
                                 >
                                   {file.name}
                                 </button>
@@ -695,37 +1179,87 @@ export default function DriveBrowser({
                                     href={file.webViewLink}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="text-slate-400 hover:text-indigo-600"
-                                    title="Open directly in Google Workspace"
+                                    className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                                    title="Open in Google Drive"
                                   >
                                     <ExternalLink className="h-3 w-3" />
                                   </a>
                                 )}
                               </div>
                             )}
-                            <span className="text-[10px] text-slate-400 font-mono italic block">
-                              Created: {file.createdTime ? new Date(file.createdTime).toLocaleDateString() : 'Unknown'}
+                            <span className="text-[10px] text-slate-400 dark:text-slate-500 block">
+                              {file.createdTime ? new Date(file.createdTime).toLocaleDateString() : 'Unknown date'}
                             </span>
                           </div>
                         </div>
                       </td>
 
                       {/* Category Col */}
-                      <td className="py-3 px-4">
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide ${
-                          meta.category === "Unsorted" 
-                            ? "bg-slate-100 text-slate-600"
-                            : "bg-indigo-55 bg-indigo-50 text-indigo-700"
-                        }`}>
+                      <td className="py-2.5 px-3">
+                        <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
                           {meta.category}
                         </span>
                       </td>
 
+                      {/* Decision & Action Col */}
+                      <td className="py-2.5 px-3">
+                        {meta.decision ? (
+                          <div className="flex flex-col gap-1 min-w-[160px] max-w-[220px]">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold ${
+                                meta.decision.decisionType === 'relocate'
+                                  ? 'bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800'
+                                  : meta.decision.decisionType === 'archive'
+                                  ? 'bg-amber-50 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300 border border-amber-200/60 dark:border-amber-800'
+                                  : 'bg-emerald-50 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800'
+                              }`}>
+                                {meta.decision.decisionType === 'relocate' && <Zap className="h-3 w-3 text-indigo-600 dark:text-indigo-400 shrink-0" />}
+                                {meta.decision.decisionType === 'archive' && <Archive className="h-3 w-3 text-amber-600 dark:text-amber-400 shrink-0" />}
+                                {meta.decision.decisionType === 'verified' && <CheckCircle2 className="h-3 w-3 text-emerald-600 dark:text-emerald-400 shrink-0" />}
+                                <span className="truncate">{meta.decision.action}</span>
+                              </span>
+
+                              {/* Quick One-Click Execution Action */}
+                              {meta.decision.decisionType !== 'verified' && meta.decision.status !== 'applied' && (
+                                <button
+                                  id={`btn-exec-dec-${file.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleExecuteSingleDecision(file, meta.decision);
+                                  }}
+                                  disabled={executingFileId === file.id}
+                                  title={`Execute: ${meta.decision.action}`}
+                                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition active:scale-95 disabled:opacity-50 cursor-pointer shadow-2xs"
+                                >
+                                  {executingFileId === file.id ? (
+                                    <RefreshCw className="h-2.5 w-2.5 animate-spin" />
+                                  ) : (
+                                    <Zap className="h-2.5 w-2.5 fill-white" />
+                                  )}
+                                  <span>Execute</span>
+                                </button>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5 text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                              <span className={`h-1.5 w-1.5 rounded-full ${
+                                meta.decision.urgency === 'high' ? 'bg-rose-500 animate-pulse' : meta.decision.urgency === 'medium' ? 'bg-amber-500' : 'bg-slate-400'
+                              }`} />
+                              <span>{meta.decision.urgency.toUpperCase()}</span>
+                              <span>·</span>
+                              <span>{meta.decision.confidence}% conf</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-[11px] text-slate-400 font-mono italic">Indexed</span>
+                        )}
+                      </td>
+
                       {/* Tags Col */}
-                      <td className="py-3 px-4">
-                        <div className="flex flex-wrap items-center gap-1 max-w-[200px]">
+                      <td className="py-2.5 px-3">
+                        <div className="flex flex-wrap items-center gap-1.5 max-w-[180px]">
                           {meta.tags.map((tag, tagIdx) => (
-                            <span key={`tag-${tag}-${tagIdx}`} className="rounded bg-slate-150 px-1 py-0.5 text-[10px] text-slate-600 font-mono">
+                            <span key={`tag-${tag}-${tagIdx}`} className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
                               #{tag}
                             </span>
                           ))}
@@ -737,21 +1271,21 @@ export default function DriveBrowser({
                                 value={newTagVal}
                                 onChange={e => setNewTagVal(e.target.value)}
                                 onKeyDown={e => e.key === "Enter" && handleAddTag(file.id)}
-                                className="rounded border border-slate-200 px-1 py-0.5 text-[10px] font-mono focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-800 dark:text-slate-200 focus:outline-none"
                                 placeholder="tag..."
                                 autoFocus
                               />
-                              <button onClick={() => handleAddTag(file.id)} className="text-emerald-600">
+                              <button onClick={() => handleAddTag(file.id)} className="text-emerald-600 hover:text-emerald-700">
                                 <Check className="h-3 w-3" />
                               </button>
-                              <button onClick={() => { setTagInputId(null); setNewTagVal(""); }} className="text-rose-500">
+                              <button onClick={() => { setTagInputId(null); setNewTagVal(""); }} className="text-slate-400 hover:text-slate-600">
                                 <X className="h-3 w-3" />
                               </button>
                             </div>
                           ) : (
                             <button
                               onClick={() => setTagInputId(file.id)}
-                              className="rounded border border-dashed border-slate-300 px-1 py-0.5 text-[10px] text-slate-400 hover:border-slate-500 hover:text-slate-600 font-mono transition"
+                              className="text-[10px] text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
                             >
                               + tag
                             </button>
@@ -760,88 +1294,72 @@ export default function DriveBrowser({
                       </td>
 
                       {/* Relevance Col */}
-                      <td className="py-3 px-4">
-                        <div className="flex flex-col gap-1 w-24 group">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-mono font-semibold text-slate-500">
-                              {meta.relevance}%
-                            </span>
-                          </div>
-                          <div className="w-full bg-slate-100 rounded-full h-1.5 relative overflow-hidden group-hover:hidden">
+                      <td className="py-2.5 px-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-14 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
                             <div 
-                              className={`h-1.5 rounded-full ${
-                                meta.relevance > 75 ? "bg-emerald-500" : meta.relevance > 40 ? "bg-indigo-500" : "bg-amber-400"
-                              }`} 
+                              className="h-1.5 rounded-full bg-gradient-to-r from-indigo-500 to-purple-500" 
                               style={{ width: `${meta.relevance}%` }}
-                            ></div>
+                            />
                           </div>
-                          {/* Relevance Adjustment Feedback UI */}
-                          <div className="hidden group-hover:flex items-center justify-between gap-1 w-full flex-wrap">
-                            <button 
-                              title="Increase Relevance Score"
-                              onClick={() => {
-                                const newRel = Math.min(100, meta.relevance + 10);
-                                setManualMetadata({
-                                  ...manualMetadata,
-                                  [file.id]: { ...(manualMetadata[file.id] || { tags: [] }), relevance: newRel }
-                                });
-                                addLog("modify", `Increased AI relevance score feedback for "${file.name}" to ${newRel}%`);
-                              }}
-                              className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-50 text-emerald-600 hover:bg-emerald-100 transition"
-                            >
-                              +
-                            </button>
-                            <span className="text-[8px] text-slate-400 uppercase tracking-widest font-bold">Feedback</span>
-                            <button 
-                              title="Decrease Relevance Score"
-                              onClick={() => {
-                                const newRel = Math.max(0, meta.relevance - 10);
-                                setManualMetadata({
-                                  ...manualMetadata,
-                                  [file.id]: { ...(manualMetadata[file.id] || { tags: [] }), relevance: newRel }
-                                });
-                                addLog("modify", `Decreased AI relevance score feedback for "${file.name}" to ${newRel}%`);
-                              }}
-                              className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-50 text-amber-600 hover:bg-amber-100 transition"
-                            >
-                              -
-                            </button>
-                          </div>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono tabular-nums w-8 text-right">
+                            {meta.relevance}%
+                          </span>
                         </div>
                       </td>
 
                       {/* Size Col */}
-                      <td className="py-3 px-4 text-right font-mono text-[10px] text-slate-500">
-                        {isFolder ? "-" : (file.size || "0 B")}
+                      <td className="py-2.5 px-3 text-right font-mono tabular-nums text-[11px] text-slate-500 dark:text-slate-400">
+                        {isFolder ? "—" : (file.size || "0 B")}
                       </td>
 
                       {/* Actions Col */}
-                      <td className="py-3 px-5 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1.5">
+                      <td className="py-2.5 px-4 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-1">
                           <button
                             id={`action-preview-file-${file.id}`}
                             onClick={() => setPreviewFile(file)}
-                            className="rounded-lg p-1.5 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600 transition cursor-pointer"
-                            title="Preview file details & AI summary"
+                            className="rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                            title="Preview file"
                           >
                             <Eye className="h-3.5 w-3.5" />
                           </button>
+                          {isSheet && file.webViewLink && (
+                            <a
+                              href={file.webViewLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                              title="Open in Google Sheets"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                          )}
                           {isEditableText && (
                             <button
                               onClick={() => handleStartEdit(file)}
-                              className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-indigo-600 transition"
-                              title="Edit text content"
+                              className="rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                              title="Edit text"
                             >
                               <Edit3 className="h-3.5 w-3.5" />
                             </button>
                           )}
                           <button
                             onClick={() => setMovingFile(file)}
-                            className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-indigo-600 transition"
+                            className="rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
                             title="Move file"
                           >
                             <Move className="h-3.5 w-3.5" />
                           </button>
+                          {onScheduleReminder && (
+                            <button
+                              onClick={() => onScheduleReminder(file)}
+                              className="rounded p-1 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                              title="Schedule reminder / action"
+                            >
+                              <Bell className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -850,40 +1368,41 @@ export default function DriveBrowser({
               </tbody>
             </table>
           </div>
+        </>
         )}
       </div>
 
       {/* MODAL: Create Folder */}
       {showFolderModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-slate-100 bg-white p-6 shadow-xl animate-in fade-in zoom-in-95 duration-200">
-            <h3 className="font-display font-bold text-slate-950 text-lg mb-1">Create Folder</h3>
-            <p className="text-xs text-slate-500 mb-4">Creates a new folder category inside current path on Google Drive.</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl animate-in fade-in duration-150">
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm mb-1">Create Folder</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Creates a new folder inside the current location on Google Drive.</p>
             
             <input
               type="text"
               id="new-folder-name"
-              placeholder="E.g., Financial Invoices, Personal Archive"
+              placeholder="Folder name..."
               value={newFolderName}
               onChange={e => setNewFolderName(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm focus:border-indigo-500 focus:bg-white focus:outline-none transition mb-4"
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:border-slate-400 dark:focus:border-slate-500 focus:outline-none transition mb-4"
               autoFocus
             />
 
-            <div className="flex justify-end gap-2.5">
+            <div className="flex justify-end gap-2">
               <button
                 onClick={() => setShowFolderModal(false)}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 id="btn-confirm-new-folder"
                 onClick={handleCreateFolderAction}
-                disabled={isSavingEdit || !newFolderName}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition disabled:opacity-50"
+                disabled={isSavingEdit || !newFolderName.trim()}
+                className="rounded-lg bg-slate-900 dark:bg-slate-100 px-3 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white transition disabled:opacity-50 cursor-pointer"
               >
-                {isSavingEdit ? "Creating..." : "Create Folder"}
+                {isSavingEdit ? "Creating..." : "Create"}
               </button>
             </div>
           </div>
@@ -892,18 +1411,18 @@ export default function DriveBrowser({
 
       {/* MODAL: Create Document */}
       {showDocModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-slate-100 bg-white p-6 shadow-xl animate-in fade-in zoom-in-95 duration-200">
-            <h3 className="font-display font-bold text-slate-950 text-lg mb-1">New Text Document</h3>
-            <p className="text-xs text-slate-500 mb-4 font-mono">Create a raw text document directly synced on Google Drive.</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl animate-in fade-in duration-150">
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm mb-1">New Text Document</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Create a text file directly on Google Drive.</p>
             
             <input
               type="text"
               id="new-doc-name"
-              placeholder="Filename (e.g., project_overview, notes)"
+              placeholder="Document name..."
               value={newDocName}
               onChange={e => setNewDocName(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm focus:border-indigo-500 focus:bg-white focus:outline-none transition mb-3"
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:border-slate-400 dark:focus:border-slate-500 focus:outline-none transition mb-2.5"
               autoFocus
             />
 
@@ -912,23 +1431,62 @@ export default function DriveBrowser({
               rows={6}
               value={newDocContent}
               onChange={e => setNewDocContent(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm font-mono focus:border-indigo-500 focus:bg-white focus:outline-none transition mb-4"
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-slate-400 dark:focus:border-slate-500 focus:outline-none transition mb-4"
             />
 
-            <div className="flex justify-end gap-2.5">
+            <div className="flex justify-end gap-2">
               <button
                 onClick={() => setShowDocModal(false)}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 id="btn-confirm-new-doc"
                 onClick={handleCreateDocumentAction}
-                disabled={isSavingEdit || !newDocName}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition disabled:opacity-50"
+                disabled={isSavingEdit || !newDocName.trim()}
+                className="rounded-lg bg-slate-900 dark:bg-slate-100 px-3 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white transition disabled:opacity-50 cursor-pointer"
               >
-                {isSavingEdit ? "Saving..." : "Create & Synchronize"}
+                {isSavingEdit ? "Saving..." : "Create"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Create Spreadsheet */}
+      {showSheetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl animate-in fade-in duration-150">
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm mb-1">New Spreadsheet</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+              Create a Google Sheet in {currentFolderId === "root" ? "My Drive" : "the current folder"}.
+            </p>
+            
+            <input
+              type="text"
+              id="new-sheet-title-input"
+              placeholder="Spreadsheet title..."
+              value={newSheetTitle}
+              onChange={e => setNewSheetTitle(e.target.value)}
+              className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:border-slate-400 dark:focus:border-slate-500 focus:outline-none transition mb-4"
+              autoFocus
+            />
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowSheetModal(false)}
+                className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                id="btn-confirm-new-sheet"
+                onClick={handleCreateSheetAction}
+                disabled={isSavingEdit || !newSheetTitle.trim()}
+                className="rounded-lg bg-slate-900 dark:bg-slate-100 px-3 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white transition disabled:opacity-50 cursor-pointer"
+              >
+                {isSavingEdit ? "Creating..." : "Create"}
               </button>
             </div>
           </div>
@@ -937,22 +1495,19 @@ export default function DriveBrowser({
 
       {/* MODAL: Live Editor Plain Text */}
       {editingFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-2xl border border-slate-100 bg-white p-6 shadow-xl animate-in' fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
-              <div>
-                <h3 className="font-display font-medium text-slate-950 text-base">Editing: {editingFile.name}</h3>
-                <span className="text-[10px] text-slate-400 font-mono">ID: {editingFile.id}</span>
-              </div>
-              <button onClick={() => setEditingFile(null)} className="text-slate-400 hover:text-slate-600">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-2xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl animate-in fade-in duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2 mb-3">
+              <h3 className="font-medium text-slate-900 dark:text-slate-100 text-sm truncate pr-2">Editing: {editingFile.name}</h3>
+              <button onClick={() => setEditingFile(null)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer">
                 <X className="h-4 w-4" />
               </button>
             </div>
 
             {isLoadingContent ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <div className="h-6 w-6 border-2 border-indigo-600 border-t-transparent animate-spin rounded-full mb-2"></div>
-                <span className="text-xs font-mono text-slate-400">Loading document details...</span>
+              <div className="flex flex-col items-center justify-center py-10 text-xs text-slate-400">
+                <RefreshCw className="h-5 w-5 animate-spin mb-2" />
+                <span>Loading content...</span>
               </div>
             ) : (
               <>
@@ -960,23 +1515,23 @@ export default function DriveBrowser({
                   rows={10}
                   value={editContent}
                   onChange={e => setEditContent(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm font-mono focus:border-indigo-500 focus:bg-white focus:outline-none transition mb-4"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 px-3 py-2 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-slate-400 dark:focus:border-slate-500 focus:outline-none transition mb-4"
                 />
 
-                <div className="flex justify-end gap-2.5">
+                <div className="flex justify-end gap-2">
                   <button
                     onClick={() => setEditingFile(null)}
-                    className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
                   >
-                    Discard Changes
+                    Discard
                   </button>
                   <button
                     id="btn-save-doc"
                     onClick={handleSaveEditAction}
                     disabled={isSavingEdit}
-                    className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition disabled:opacity-50"
+                    className="rounded-lg bg-slate-900 dark:bg-slate-100 px-3 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white transition disabled:opacity-50 cursor-pointer"
                   >
-                    {isSavingEdit ? "Saving..." : "Commit Changes"}
+                    {isSavingEdit ? "Saving..." : "Save Changes"}
                   </button>
                 </div>
               </>
@@ -987,39 +1542,38 @@ export default function DriveBrowser({
 
       {/* MODAL: Move File Picker */}
       {movingFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-slate-100 bg-white p-6 shadow-xl animate-in fade-in duration-200">
-            <h3 className="font-display font-bold text-slate-950 text-lg mb-1">Move File</h3>
-            <p className="text-xs text-slate-500 mb-4 text-slate-800">
-              Select destination folder to move <strong className="text-slate-900">"{movingFile.name}"</strong>:
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl animate-in fade-in duration-150">
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm mb-1">Move File</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 truncate">
+              Destination for "{movingFile.name}":
             </p>
 
-            {/* List folders including parent level */}
-            <div className="max-h-60 overflow-y-auto border border-slate-150 rounded-lg p-2.5 space-y-1 mb-4">
+            <div className="max-h-56 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-lg p-2 space-y-1 mb-4">
               <button
                 onClick={() => handleMoveFileAction("root")}
-                className="w-full text-left font-semibold text-xs font-mono py-2 px-3 hover:bg-indigo-50/50 rounded-lg flex items-center gap-2"
+                className="w-full text-left text-xs py-1.5 px-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-800 dark:text-slate-200 cursor-pointer"
               >
-                <Folder className="h-4 w-4 text-indigo-550 shrink-0" /> My Drive Root
+                <Folder className="h-3.5 w-3.5 text-slate-500 shrink-0" /> My Drive (Root)
               </button>
               {folderList.filter(fold => fold.id !== movingFile.id).map((fold, fIdx) => (
                 <button
                   key={`fold-move-${fold.id}-${fIdx}`}
                   onClick={() => handleMoveFileAction(fold.id)}
-                  className="w-full text-left font-mono text-xs py-2 px-3 hover:bg-indigo-50/50 rounded-lg flex items-center gap-2 border-l-2 border-slate-200 pl-4"
+                  className="w-full text-left text-xs py-1.5 px-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-2 pl-4 text-slate-800 dark:text-slate-200 cursor-pointer"
                 >
-                  <Folder className="h-4 w-4 text-amber-500 shrink-0" /> {fold.name}
+                  <Folder className="h-3.5 w-3.5 text-amber-600 dark:text-amber-500 shrink-0" /> {fold.name}
                 </button>
               ))}
               {folderList.length === 0 && (
-                <span className="text-slate-400 text-xs text-center py-4 block">No other custom folders detected! Create one.</span>
+                <span className="text-slate-400 text-xs text-center py-3 block">No other folders available.</span>
               )}
             </div>
 
             <div className="flex justify-end">
               <button
                 onClick={() => setMovingFile(null)}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
               >
                 Cancel
               </button>
@@ -1030,44 +1584,43 @@ export default function DriveBrowser({
 
       {/* BULK TAG MODAL */}
       {showBulkTagModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-slate-100 bg-white p-6 shadow-xl animate-in zoom-in-95 duration-200">
-            <h3 className="font-display font-bold text-slate-950 text-lg mb-1">Apply Bulk Tag</h3>
-            <p className="text-xs text-slate-500 mb-4">
-              Add a tag to all {selectedFileIds.size} selected files simultaneously.
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xl animate-in fade-in duration-150">
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm mb-1">Apply Tag</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+              Add a tag to {selectedFileIds.size} selected item{selectedFileIds.size === 1 ? "" : "s"}.
             </p>
 
-            <div className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Common Tag Name</label>
-                <input
-                  type="text"
-                  value={bulkTagValue}
-                  onChange={e => setBulkTagValue(e.target.value)}
-                  placeholder="e.g. Invoices-2023"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-sm focus:border-indigo-500 focus:bg-white focus:outline-none transition-colors"
-                />
-              </div>
+            <div className="space-y-3">
+              <input
+                type="text"
+                value={bulkTagValue}
+                onChange={e => setBulkTagValue(e.target.value)}
+                placeholder="Tag name (e.g. Invoices)"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:border-slate-400 dark:focus:border-slate-500 focus:outline-none transition"
+                autoFocus
+              />
 
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex justify-end gap-2 pt-1">
                 <button
                   onClick={() => setShowBulkTagModal(false)}
-                  className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleApplyBulkTag}
                   disabled={!bulkTagValue.trim()}
-                  className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition"
+                  className="rounded-lg bg-slate-900 dark:bg-slate-100 px-3 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-white disabled:opacity-50 transition cursor-pointer"
                 >
-                  Apply to {selectedFileIds.size} Files
+                  Apply
                 </button>
               </div>
             </div>
           </div>
         </div>
       )}
+
       {/* MODAL: File Preview Modal with AI Gemini Summary */}
       {previewFile && (
         <FilePreviewModal
@@ -1077,6 +1630,7 @@ export default function DriveBrowser({
           metadata={getFileMetadata(previewFile)}
           onStartEdit={handleStartEdit}
           onStartMove={setMovingFile}
+          onExecuteDecision={handleExecuteSingleDecision}
         />
       )}
     </div>

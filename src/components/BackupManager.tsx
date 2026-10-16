@@ -6,6 +6,7 @@ import {
 import { BackupJob, BackupLog, DriveFile } from "../types";
 import { createDriveFolder, createDriveTextFile } from "../lib/googleApi";
 import InfoTooltip from "./InfoTooltip";
+import ContextualActionToolbar from "./ContextualActionToolbar";
 
 interface BackupManagerProps {
   token: string | null;
@@ -185,177 +186,160 @@ export default function BackupManager({
 
   return (
     <div className="space-y-6">
-      {/* Simulation Connected Devices Panel */}
-      <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-        <h3 className="text-sm font-semibold text-slate-900 tracking-tight flex items-center">
-          Active Devices Backup Connectors
-          <InfoTooltip text="These are the devices connected to your account. Select which ones should run these backups." />
-        </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="flex items-center gap-3 p-3.5 rounded-lg border border-slate-100 bg-slate-50/50">
-            <div className="h-9 w-9 flex items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
-              <Laptop className="h-5 w-5" />
-            </div>
-            <div>
-              <span className="font-semibold text-slate-800 text-xs block">Macbook Air - Steven</span>
-              <span className="text-[10px] text-emerald-600 font-mono font-medium flex items-center gap-1">
-                ● Connected • Sync Ready
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 p-3.5 rounded-lg border border-slate-100 bg-slate-50/50">
-            <div className="h-9 w-9 flex items-center justify-center rounded-lg bg-indigo-50 text-indigo-600">
-              <Smartphone className="h-5 w-5" />
-            </div>
-            <div>
-              <span className="font-semibold text-slate-800 text-xs block">iPhone 15 Pro</span>
-              <span className="text-[10px] text-emerald-600 font-mono font-medium flex items-center gap-1">
-                ● Connected • Auto Wifi
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 p-3.5 rounded-lg border border-slate-150 bg-indigo-50/10 border-indigo-100">
-            <div className="h-9 w-9 flex items-center justify-center rounded-lg bg-indigo-50 text-indigo-700">
-              <HardDrive className="h-5 w-5" />
-            </div>
-            <div>
-              <span className="font-semibold text-slate-800 text-xs block">Drive Storage Vault</span>
-              <span className="text-[10px] text-indigo-600 font-mono font-medium flex items-center gap-1">
-                ● Google Drive Target Active
-              </span>
-            </div>
-          </div>
+      {/* Header & Primary Action */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+            <HardDrive className="h-4 w-4 text-slate-600 dark:text-slate-300" />
+            <span>Cloud Backup Routines</span>
+          </h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Automate snapshot backups from active Google Drive folders to dedicated cloud archives.
+          </p>
         </div>
+
+        <button
+          id="btn-add-backup-config"
+          onClick={() => setShowConfigModal(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 transition cursor-pointer shadow-xs shrink-0"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          <span>New Backup Job</span>
+        </button>
       </div>
 
       {/* Backup Jobs Content */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Setup configuration / configured jobs */}
         <div className="lg:col-span-7 space-y-4">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h4 className="font-semibold text-slate-900 text-xs uppercase tracking-wider text-slate-500 flex items-center">
-                Scheduled Cloud Repositories
-                <InfoTooltip text="A list of automatic rules you have set up to copy files from one Google Drive folder to another safely." />
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs overflow-hidden">
+            <div className="border-b border-slate-200 dark:border-slate-800 px-5 py-3.5 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-between">
+              <h4 className="font-semibold text-slate-800 dark:text-slate-200 text-xs flex items-center gap-1.5">
+                <span>Configured Jobs</span>
+                <span className="text-slate-400 dark:text-slate-500 font-normal">({backupJobs.length})</span>
               </h4>
-              <button
-                id="btn-add-backup-config"
-                onClick={() => setShowConfigModal(true)}
-                className="flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 transition"
-              >
-                <Plus className="h-3.5 w-3.5" /> Add Backup Config
-              </button>
             </div>
 
-            {backupJobs.length === 0 ? (
-              <div className="text-center py-8 text-slate-450 text-xs text-slate-500 italic block">
-                No automatic backup configurations defined yet. Click "Add Backup Config" to schedule your first synchroniser.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {backupJobs.map(job => (
-                  <div key={job.id} id={`backup-card-${job.id}`} className="p-4 rounded-xl border border-slate-150 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white hover:border-indigo-100 transition">
-                    <div className="space-y-1">
-                      <div className="font-bold text-slate-850 text-sm flex items-center gap-1.5">
-                        {job.name}
-                        <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-700 font-mono font-medium uppercase">
-                          {job.schedule}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-slate-500 leading-snug">
-                        Source Folder: <strong className="text-slate-800">{job.sourceFolderName}</strong> <br />
-                        Vault Destination: <strong className="text-indigo-600">{job.destinationFolderName}</strong>
-                      </div>
-                      <div className="text-[10px] text-slate-400">
-                        Devices covered: {job.devices.join(", ")}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <div className="text-right">
-                        <span className="text-[10px] text-slate-400 block font-mono">Status</span>
-                        <span className={`text-xs font-semibold uppercase ${
-                          job.status === 'success' 
-                            ? "text-emerald-600" 
-                            : job.status === 'running' 
-                            ? "text-indigo-600 animate-pulse" 
-                            : job.status === 'failed' 
-                            ? "text-rose-500" 
-                            : "text-slate-500"
-                        }`}>
-                          {job.status}
-                        </span>
-                        {job.lastRun && <span className="text-[10px] text-slate-400 block font-mono">Sync: {job.lastRun}</span>}
-                        {isExecuting === job.id && processingProgress && (
-                          <div className="mt-1 text-left min-w-[120px]">
-                            <span className="text-[9px] text-indigo-500 font-mono block truncate w-32">
-                              {processingFile ? `Copying: ${processingFile}` : "Preparing..."} 
-                            </span>
-                            <div className="w-full bg-slate-100 rounded-full h-1 mt-0.5 relative overflow-hidden">
-                              <div className="bg-indigo-500 h-1 rounded-full transition-all duration-300" style={{ width: `${(processingProgress.current / (processingProgress.total || 1)) * 100}%` }}></div>
-                            </div>
-                            <span className="text-[8px] text-slate-400 font-mono flex justify-between mt-0.5">
-                              <span>{processingProgress.current} / {processingProgress.total} files</span>
-                              <span>{Math.round((processingProgress.current / (processingProgress.total || 1)) * 100)}%</span>
-                            </span>
+            <div className="p-5">
+              {backupJobs.length === 0 ? (
+                <ContextualActionToolbar
+                  activeTab="backup"
+                  isEmptyState={true}
+                  emptyTitle="No backup jobs configured"
+                  emptyDescription="Automate continuous folder synchronization to Google Drive with custom schedules and multi-device support."
+                  onActionSelect={(actionId) => {
+                    if (actionId === 'new-backup-job') setShowConfigModal(true);
+                  }}
+                />
+              ) : (
+                <div className="space-y-3">
+                  {backupJobs.map(job => (
+                    <div 
+                      key={job.id} 
+                      id={`backup-card-${job.id}`} 
+                      className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-800/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition hover:border-slate-300 dark:hover:border-slate-700"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="font-semibold text-slate-900 dark:text-slate-100 text-xs flex items-center gap-2">
+                          <span className="truncate">{job.name}</span>
+                          <span className="rounded bg-slate-200/70 dark:bg-slate-700 px-1.5 py-0.5 text-[10px] text-slate-700 dark:text-slate-300 font-mono uppercase shrink-0">
+                            {job.schedule}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug truncate">
+                          Source: <strong className="text-slate-700 dark:text-slate-300 font-medium">{job.sourceFolderName}</strong> → Target: <strong className="text-slate-700 dark:text-slate-300 font-medium">{job.destinationFolderName}</strong>
+                        </div>
+                        {job.lastRun && (
+                          <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                            Last sync: {job.lastRun}
                           </div>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-1.5 ml-4 shrink-0">
-                        <button
-                          id={`btn-run-backup-${job.id}`}
-                          onClick={() => handleRunBackupJob(job.id)}
-                          disabled={isExecuting !== null}
-                          className="rounded-lg bg-indigo-50 p-2 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 transition"
-                          title="Execute Cloud Sync Backups Now"
-                        >
-                          <Play className="h-4 w-4" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteJob(job.id)}
-                          className="rounded-lg p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
-                          title="Remove backup plan"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <div className="text-right">
+                          <span className={`text-[11px] font-semibold uppercase ${
+                            job.status === 'success' 
+                              ? "text-emerald-600 dark:text-emerald-400" 
+                              : job.status === 'running' 
+                              ? "text-indigo-600 dark:text-indigo-400 animate-pulse" 
+                              : job.status === 'failed' 
+                              ? "text-rose-500 dark:text-rose-400" 
+                              : "text-slate-500 dark:text-slate-400"
+                          }`}>
+                            {job.status}
+                          </span>
+                          {isExecuting === job.id && processingProgress && (
+                            <div className="mt-1 text-left min-w-[110px]">
+                              <span className="text-[9px] text-indigo-500 dark:text-indigo-400 font-mono block truncate w-28">
+                                {processingFile ? processingFile : "Syncing..."} 
+                              </span>
+                              <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-1 mt-0.5 overflow-hidden">
+                                <div className="bg-indigo-600 h-1 rounded-full transition-all duration-300" style={{ width: `${(processingProgress.current / (processingProgress.total || 1)) * 100}%` }}></div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            id={`btn-run-backup-${job.id}`}
+                            onClick={() => handleRunBackupJob(job.id)}
+                            disabled={isExecuting !== null}
+                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 transition cursor-pointer"
+                            title="Run Backup Now"
+                          >
+                            <Play className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteJob(job.id)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition cursor-pointer"
+                            title="Delete configuration"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Sync History Logs */}
         <div className="lg:col-span-5">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm space-y-4 h-full flex flex-col">
-            <h4 className="font-semibold text-slate-900 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-105 pb-3 flex items-center gap-1.5">
-              <History className="h-4 w-4 text-slate-400" /> Synchronisation Log History
-            </h4>
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs h-full flex flex-col overflow-hidden">
+            <div className="border-b border-slate-200 dark:border-slate-800 px-5 py-3.5 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-between">
+              <h4 className="font-semibold text-slate-800 dark:text-slate-200 text-xs flex items-center gap-1.5">
+                <History className="h-3.5 w-3.5 text-slate-400" />
+                <span>Execution History</span>
+              </h4>
+              <span className="text-[11px] text-slate-400 font-mono">{backupHistory.length} logs</span>
+            </div>
 
-            <div className="flex-1 overflow-y-auto max-h-[380px] space-y-2.5 pr-1">
+            <div className="flex-1 overflow-y-auto max-h-[380px] p-5 space-y-2.5 divide-y divide-slate-100 dark:divide-slate-800">
               {backupHistory.length === 0 ? (
-                <div className="text-center py-12 text-slate-400 text-xs italic">
-                  No execution records logged. Run a manual sync backup to view reports logs.
+                <div className="text-center py-12 text-slate-400 dark:text-slate-500 text-xs">
+                  No execution logs recorded yet.
                 </div>
               ) : (
                 backupHistory.map(log => (
-                  <div key={log.id} className="p-3 rounded-lg border border-slate-100 bg-slate-50/50 space-y-1 text-[11px] leading-relaxed">
-                    <div className="flex justify-between items-center bg-white p-1 rounded border border-slate-100 mb-1.5">
-                      <span className="font-bold text-slate-800 font-display">{log.jobName}</span>
-                      <span className={`text-[10px] font-mono rounded px-1.5 py-0.5 font-bold ${
-                        log.status === "success" ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"
+                  <div key={log.id} className="pt-2.5 first:pt-0 space-y-1 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium text-slate-900 dark:text-slate-100">{log.jobName}</span>
+                      <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-medium ${
+                        log.status === "success" 
+                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300" 
+                          : "bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300"
                       }`}>
                         {log.status.toUpperCase()}
                       </span>
                     </div>
-                    <p className="text-slate-600">{log.message}</p>
-                    <div className="flex justify-between text-[10px] text-slate-400 font-mono mt-1 pt-1 border-t border-slate-100">
-                      <span>Files backed up: {log.filesCopied}</span>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">{log.message}</p>
+                    <div className="flex justify-between text-[10px] text-slate-400 font-mono pt-0.5">
+                      <span>{log.filesCopied} file(s) copied</span>
                       <span>{log.timestamp}</span>
                     </div>
                   </div>
@@ -368,37 +352,38 @@ export default function BackupManager({
 
       {/* CONFIG MODAL */}
       {showConfigModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-slate-100 bg-white p-6 shadow-xl animate-in zoom-in-95 duration-200 space-y-4">
-            <h3 className="font-display font-bold text-slate-950 text-lg mb-1 flex items-center">
-              Create Cloud Backup Job
-              <InfoTooltip text="Set up a rule to automatically backup files from a specific folder to the Cloud Auto Backups system." />
-            </h3>
-            <p className="text-xs text-slate-500 mb-2">Configure automated secure sync backups from your active workspaces into safety clouds.</p>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl animate-in zoom-in-95 duration-150 space-y-4">
+            <div>
+              <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-base">
+                Create Cloud Backup Routine
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Define the source folder and target destination for automatic file preservation.
+              </p>
+            </div>
 
-            <div className="space-y-3.5 text-xs text-slate-650">
-              {/* Job label */}
+            <div className="space-y-3.5 text-xs">
               <div className="space-y-1">
-                <label className="font-medium text-slate-700">Backup Name / Label</label>
+                <label className="font-medium text-slate-700 dark:text-slate-300">Routine Name</label>
                 <input
-                id="backup-job-title"
+                  id="backup-job-title"
                   type="text"
-                  placeholder="E.g., Client Receipts Sync, Developer Repository Backup"
+                  placeholder="e.g. Weekly Invoices Snapshot"
                   value={newJobName}
                   onChange={e => setNewJobName(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs focus:border-indigo-500 focus:bg-white focus:outline-none transition"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3.5">
-                {/* Source Directory */}
+              <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="font-medium text-slate-700">Source Directory (Local/Drive)</label>
+                  <label className="font-medium text-slate-700 dark:text-slate-300">Source Folder</label>
                   <select
                     id="backup-source-select"
                     value={sourceId}
                     onChange={e => setSourceId(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
+                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
                   >
                     <option value="root">My Drive Root</option>
                     {folders.map((f, fIdx) => (
@@ -407,31 +392,30 @@ export default function BackupManager({
                   </select>
                 </div>
 
-                {/* Destination Workspace Directory Name */}
                 <div className="space-y-1">
-                  <label className="font-medium text-slate-700">Vault Target Directory Name</label>
+                  <label className="font-medium text-slate-700 dark:text-slate-300">Vault Target Folder</label>
                   <input
                     type="text"
                     id="backup-dest-name-input"
                     value={destName}
                     onChange={e => setDestName(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs focus:border-indigo-500 focus:bg-white focus:outline-none transition font-semibold text-indigo-700"
+                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500 font-mono"
                   />
                 </div>
               </div>
 
-              {/* Schedule Type selection */}
-              <div className="space-y-1.5 text-xs">
-                <label className="font-medium text-slate-700">Backup Interval Run Period</label>
-                <div className="flex gap-2">
-                  {['hourly', 'daily', 'weekly', 'manual'].map((schedOpt) => (
+              <div className="space-y-1.5">
+                <label className="font-medium text-slate-700 dark:text-slate-300">Schedule Frequency</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(['hourly', 'daily', 'weekly', 'manual'] as const).map((schedOpt) => (
                     <button
                       key={schedOpt}
-                      onClick={() => setSchedule(schedOpt as any)}
-                      className={`flex-1 py-1.5 rounded-lg border font-semibold text-center uppercase tracking-wide transition text-[10px] ${
+                      type="button"
+                      onClick={() => setSchedule(schedOpt)}
+                      className={`py-1.5 rounded-lg border text-xs font-medium text-center uppercase tracking-wide transition cursor-pointer ${
                         schedule === schedOpt 
-                          ? "bg-indigo-600 text-white border-indigo-600" 
-                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 border-transparent font-semibold" 
+                          : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700"
                       }`}
                     >
                       {schedOpt}
@@ -439,48 +423,22 @@ export default function BackupManager({
                   ))}
                 </div>
               </div>
-
-              {/* Connected Device Selection */}
-              <div className="space-y-1.5 text-xs">
-                <label className="font-medium text-slate-700">Simulate Conn Device Targets</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { key: "Laptop-Pro", name: "Notebook Laptop" },
-                    { key: "iPhone-Mobile", name: "iPhone 15 Mobile" },
-                    { key: "Server-Agent", name: "Backup Host Daemon" }
-                  ].map((dev) => {
-                    const selected = selectedDevices.includes(dev.key);
-                    return (
-                      <button
-                        key={dev.key}
-                        onClick={() => toggleDevice(dev.key)}
-                        className={`p-2 rounded-lg border text-left flex items-center justify-between text-[11px] hover:border-indigo-200 transition ${
-                          selected ? "bg-indigo-50/50 border-indigo-200 text-indigo-700 font-semibold" : "bg-white text-slate-600 border-slate-200"
-                        }`}
-                      >
-                        {dev.name}
-                        {selected ? <Check className="h-3.5 w-3.5 text-indigo-600" /> : <X className="h-3.5 w-3.5 text-slate-350" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
             </div>
 
-            <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-100">
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
               <button
                 onClick={() => setShowConfigModal(false)}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 id="btn-confirm-add-backup"
                 onClick={handleAddJobAction}
-                disabled={!newJobName || selectedDevices.length === 0}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition disabled:opacity-50"
+                disabled={!newJobName}
+                className="rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 transition disabled:opacity-50 cursor-pointer shadow-xs"
               >
-                Confirm Setup Plan
+                Save Routine
               </button>
             </div>
           </div>

@@ -2,6 +2,16 @@
  * Shared Type Definitions for Drive Organizer Companion
  */
 
+export interface FileDecision {
+  action: string;
+  decisionType: 'relocate' | 'archive' | 'protect' | 'consolidate' | 'verified';
+  targetFolder: string;
+  confidence: number;
+  urgency: 'high' | 'medium' | 'low';
+  rationale: string;
+  status: 'recommended' | 'applied';
+}
+
 export interface DriveFile {
   id: string;
   name: string;
@@ -15,6 +25,9 @@ export interface DriveFile {
   relevance?: number; // 0 to 100 Relevance score based on category
   content?: string; // Cache text content for edit view
   webViewLink?: string;
+  decision?: FileDecision;
+  decisionAction?: string;
+  decisionRationale?: string;
 }
 
 export interface BackupJob {
@@ -54,7 +67,7 @@ export interface TaskItem {
 export interface ActivityLog {
   id: string;
   timestamp: string;
-  actionType: 'create' | 'move' | 'modify' | 'organize' | 'backup' | 'task' | 'email';
+  actionType: 'create' | 'move' | 'modify' | 'organize' | 'backup' | 'task' | 'email' | 'sheet';
   message: string;
   details?: string;
 }
@@ -101,5 +114,59 @@ export interface ChatRolePreset {
   iconName: string;
   defaultModel: GeminiChatModel;
   systemInstruction: string;
+}
+
+export interface SheetMetadata {
+  spreadsheetId: string;
+  title: string;
+  spreadsheetUrl?: string;
+  sheets?: Array<{
+    sheetId: number;
+    title: string;
+    index: number;
+    rowCount?: number;
+    columnCount?: number;
+  }>;
+}
+
+export interface SheetGridData {
+  range: string;
+  majorDimension?: string;
+  values: string[][];
+}
+
+export interface SmartTaskReminder {
+  id: string;
+  title: string;
+  description?: string;
+  triggerDate?: string; // YYYY-MM-DD
+  triggerTime: string; // HH:mm
+  recurrence: 'once' | 'daily' | 'weekly' | 'monthly';
+  actionType: 'reminder_only' | 'create_folder' | 'edit_doc' | 'relocate_file';
+  actionPayload?: {
+    folderName?: string;
+    parentFolderId?: string;
+    appendContent?: string;
+    targetDestinationFolderId?: string;
+  };
+  targetFileId?: string;
+  targetFileName?: string;
+  notifyInApp: boolean;
+  notifyEmail: boolean;
+  status: 'active' | 'fired' | 'completed';
+  notified?: boolean;
+  executed?: boolean;
+  lastFiredAt?: string;
+  createdAt?: string;
+}
+
+export interface EmailApprovalRequest {
+  id: string;
+  reminderId?: string;
+  recipientEmail: string;
+  subject: string;
+  triggerReason: string;
+  htmlBody: string;
+  timestamp: string;
 }
 

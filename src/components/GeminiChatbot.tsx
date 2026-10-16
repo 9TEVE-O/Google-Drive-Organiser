@@ -5,7 +5,6 @@ import {
   User, 
   Send, 
   Sparkles, 
-  RotateCcw, 
   Copy, 
   Check, 
   Trash2, 
@@ -14,67 +13,70 @@ import {
   Zap, 
   BrainCircuit, 
   FolderTree, 
-  CheckSquare,
-  AlertCircle
+  CheckSquare, 
+  AlertCircle,
+  RefreshCw,
+  MoreVertical,
+  X,
+  ArrowRight,
+  ChevronDown
 } from "lucide-react";
-import { ChatMessage, GeminiChatModel, ChatRolePreset } from "../types";
+import { ChatMessage, GeminiChatModel, ChatRolePreset, DriveFile } from "../types";
+
+export interface GeminiChatbotProps {
+  files?: DriveFile[];
+  clearTrigger?: number;
+  exportTrigger?: number;
+}
 
 const ROLE_PRESETS: ChatRolePreset[] = [
   {
     id: "drive_expert",
-    title: "Drive & Storage Specialist",
-    description: "Expert in folder taxonomy, file naming conventions, cloud storage cleanup, and deduplication.",
+    title: "Storage Specialist",
+    description: "Folder taxonomy, file naming rules, clean storage hygiene, and deduplication.",
     iconName: "FolderTree",
     defaultModel: "gemini-3.8-flash",
     systemInstruction: "You are an elite Google Drive organization and cloud storage specialist. You help users structure nested folder hierarchies, design foolproof file naming schemas (dates, project tags, revisions), identify archiving candidates, and maintain pristine digital storage hygiene. Be direct, well-organized, and provide bulleted solutions."
   },
   {
     id: "fast_assistant",
-    title: "Fast / Quick Actions",
-    description: "Ultra-fast answers, instant summaries, rapid file lookups, and concise recommendations.",
+    title: "Quick Actions",
+    description: "Rapid file lookups, concise recommendations, and fast summaries.",
     iconName: "Zap",
     defaultModel: "gemini-3.1-flash-lite",
     systemInstruction: "You are a high-speed AI assistant optimized for brief, immediate, bulleted responses. Answer queries as quickly and cleanly as possible without unnecessary conversational filler."
   },
   {
     id: "complex_architect",
-    title: "Strategy & Governance Architect",
-    description: "In-depth reasoning, automated workflow design, enterprise data policies, and complex scenarios.",
+    title: "Governance Architect",
+    description: "Deep reasoning, data retention rules, access policies, and workflow design.",
     iconName: "BrainCircuit",
     defaultModel: "gemini-3.1-pro-preview",
     systemInstruction: "You are an enterprise cloud solutions architect and data governance expert. You specialize in complex file classification, access control policies, multi-tier backup replication strategies, API automation scripts, and large-scale data migration plans. Provide comprehensive, reasoned, and structured technical advice."
   },
   {
     id: "productivity_coach",
-    title: "Productivity & Task Coach",
-    description: "Turn file chaos into actionable Google Tasks, deadlines, priorities, and daily review routines.",
+    title: "Productivity Coach",
+    description: "Turn scattered files into Google Tasks, deadlines, and daily review routines.",
     iconName: "CheckSquare",
     defaultModel: "gemini-3.8-flash",
     systemInstruction: "You are an executive productivity coach. You help the user break down messy projects into actionable Google Tasks, schedule realistic review reminders, prioritize pending documents, and maintain high personal efficiency."
-  },
-  {
-    id: "custom",
-    title: "Custom Role",
-    description: "Define your own specific system instruction and model configuration.",
-    iconName: "Sliders",
-    defaultModel: "gemini-3.8-flash",
-    systemInstruction: "You are an adaptable AI assistant for Google Drive and productivity."
   }
 ];
 
-const PROMPT_CHIPS = [
+const DEFAULT_STARTERS = [
   "How should I structure folders for personal taxes and invoices?",
   "Recommend a standard file naming convention for client projects",
   "What is the best weekly checklist to prevent Google Drive clutter?",
-  "How do I organize shared team documents to avoid accidental deletions?"
+  "Turn my pending tax invoices and contracts into an actionable task sprint"
 ];
 
-export default function GeminiChatbot() {
+export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: GeminiChatbotProps = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "initial-msg",
       role: "model",
-      content: "Hello! I am your AI Drive Companion powered by Gemini. You can ask me how to organize your folders, suggest file naming standards, write cleanup checklists, or select different specialized AI roles to assist your workflow.",
+      content: "Hello! I am your AI Drive Companion. Ask me how to structure your folders, audit files, establish naming rules, or extract action items.",
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       modelUsed: "gemini-3.8-flash"
     }
@@ -84,12 +86,21 @@ export default function GeminiChatbot() {
   const [selectedPresetId, setSelectedPresetId] = useState<string>("drive_expert");
   const [selectedModel, setSelectedModel] = useState<GeminiChatModel>("gemini-3.8-flash");
   const [customInstruction, setCustomInstruction] = useState(ROLE_PRESETS[0].systemInstruction);
-  const [showRoleConfig, setShowRoleConfig] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
 
+  // Compressed Options Menu & Drawer
+  const [showOptionsMenu, setShowOptionsMenu] = useState(false);
+  const [showConfirmClear, setShowConfirmClear] = useState(false);
+  const [toastNotice, setToastNotice] = useState<string | null>(null);
+
+  // Dynamic Suggestions state
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>(DEFAULT_STARTERS);
+  const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const optionsMenuRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -99,10 +110,29 @@ export default function GeminiChatbot() {
     scrollToBottom();
   }, [messages, isLoading]);
 
+  // Click outside to close options menu
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (optionsMenuRef.current && !optionsMenuRef.current.contains(e.target as Node)) {
+        setShowOptionsMenu(false);
+        setShowConfirmClear(false);
+      }
+    };
+    if (showOptionsMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showOptionsMenu]);
+
+  const activePreset = ROLE_PRESETS.find(p => p.id === selectedPresetId) || ROLE_PRESETS[0];
+
   const handleSelectPreset = (preset: ChatRolePreset) => {
     setSelectedPresetId(preset.id);
     setSelectedModel(preset.defaultModel);
     setCustomInstruction(preset.systemInstruction);
+    setShowOptionsMenu(false);
+    setToastNotice(`Mode: ${preset.title}`);
+    setTimeout(() => setToastNotice(null), 2500);
   };
 
   const handleSendMessage = async (textToSend?: string) => {
@@ -135,16 +165,16 @@ export default function GeminiChatbot() {
           })
         });
 
-        const text = await response.text();
-        if (text && (text.startsWith("{") || text.startsWith("["))) {
-          data = JSON.parse(text);
+        const resText = await response.text();
+        if (resText && (resText.startsWith("{") || resText.startsWith("["))) {
+          data = JSON.parse(resText);
         }
       } catch (fetchErr) {
         console.warn("Fetch /api/gemini/chat error:", fetchErr);
       }
 
       if (!data || !data.reply) {
-        throw new Error(data?.error || "AI assistant is temporarily busy or reconnecting. Please try again in a moment.");
+        throw new Error(data?.error || "AI assistant is temporarily busy. Please try again.");
       }
 
       const botReply: ChatMessage = {
@@ -158,7 +188,7 @@ export default function GeminiChatbot() {
       setMessages(prev => [...prev, botReply]);
     } catch (err: any) {
       console.error("Chat Error:", err);
-      setApiError(err.message || "Failed to contact Gemini chatbot.");
+      setApiError(err.message || "Failed to reach AI service.");
     } finally {
       setIsLoading(false);
       setTimeout(() => inputRef.current?.focus(), 100);
@@ -178,318 +208,422 @@ export default function GeminiChatbot() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleClearHistory = () => {
-    if (confirm("Clear conversation history and start fresh?")) {
-      setMessages([
-        {
-          id: `initial-${Date.now()}`,
-          role: "model",
-          content: "Conversation history reset. How can I assist you with your Google Drive or workflow today?",
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          modelUsed: selectedModel
-        }
-      ]);
-      setApiError(null);
-    }
+  // Safe clear conversation
+  const executeClearChat = () => {
+    setMessages([
+      {
+        id: `initial-${Date.now()}`,
+        role: "model",
+        content: "Chat cleared. What would you like to organize or discuss today?",
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        modelUsed: selectedModel
+      }
+    ]);
+    setApiError(null);
+    setShowConfirmClear(false);
+    setShowOptionsMenu(false);
+    setToastNotice("Conversation cleared");
+    setTimeout(() => setToastNotice(null), 2500);
+    setTimeout(() => inputRef.current?.focus(), 100);
   };
 
+  // Safe export transcript
   const handleExportTranscript = () => {
     const transcript = messages
-      .map(m => `[${m.timestamp}] ${m.role === 'user' ? 'You' : `Gemini (${m.modelUsed || 'AI'})`}:\n${m.content}\n`)
+      .map(m => `[${m.timestamp}] ${m.role === 'user' ? 'You' : 'Gemini'}:\n${m.content}\n`)
       .join("\n---\n\n");
     
     const blob = new Blob([transcript], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `gemini-drive-chat-${new Date().toISOString().slice(0, 10)}.txt`;
+    link.download = `drive-chat-${new Date().toISOString().slice(0, 10)}.txt`;
     link.click();
     URL.revokeObjectURL(url);
+    setShowOptionsMenu(false);
+    setToastNotice("Transcript downloaded");
+    setTimeout(() => setToastNotice(null), 2500);
   };
 
-  const activePreset = ROLE_PRESETS.find(p => p.id === selectedPresetId) || ROLE_PRESETS[0];
+  // Sync external triggers (Header toolbar & event bus)
+  useEffect(() => {
+    if (clearTrigger && clearTrigger > 0) executeClearChat();
+  }, [clearTrigger]);
+
+  useEffect(() => {
+    if (exportTrigger && exportTrigger > 0) handleExportTranscript();
+  }, [exportTrigger]);
+
+  useEffect(() => {
+    const handleClearEvent = () => executeClearChat();
+    const handleExportEvent = () => handleExportTranscript();
+    const handleIdeasEvent = () => handleGenerateAiSuggestions();
+
+    window.addEventListener("drive-organizer:clear-chat", handleClearEvent);
+    window.addEventListener("drive-organizer:export-chat", handleExportEvent);
+    window.addEventListener("drive-organizer:generate-ideas", handleIdeasEvent);
+
+    return () => {
+      window.removeEventListener("drive-organizer:clear-chat", handleClearEvent);
+      window.removeEventListener("drive-organizer:export-chat", handleExportEvent);
+      window.removeEventListener("drive-organizer:generate-ideas", handleIdeasEvent);
+    };
+  }, [selectedModel, files, selectedPresetId]);
+
+  // AI-Powered Dynamic Suggestion Generator
+  const handleGenerateAiSuggestions = async () => {
+    if (isGeneratingSuggestions) return;
+    setIsGeneratingSuggestions(true);
+    setApiError(null);
+
+    try {
+      const sampleNames = files?.slice(0, 8).map(f => f.name) || [];
+      const res = await fetch("/api/gemini/chat-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roleTitle: activePreset.title,
+          sampleFiles: sampleNames
+        })
+      });
+
+      if (!res.ok) throw new Error("Could not fetch suggestions");
+      const data = await res.json();
+      if (data && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+        setAiSuggestions(data.suggestions);
+        setToastNotice("New suggestions ready");
+        setTimeout(() => setToastNotice(null), 2500);
+      }
+    } catch {
+      // Fallback suggestions
+      const sample = files?.[0]?.name ? ` for '${files[0].name}'` : "";
+      setAiSuggestions([
+        `What folder structure do you recommend${sample}?`,
+        "Recommend standard file naming tags with date prefixes",
+        "Create an automated weekly checklist to prevent Drive clutter",
+        "Turn pending invoices into actionable Google Tasks with deadlines"
+      ]);
+    } finally {
+      setIsGeneratingSuggestions(false);
+    }
+  };
+
+  const isStarterOnly = messages.length <= 1;
 
   return (
-    <div className="space-y-4 max-w-6xl mx-auto">
-      {/* Header Banner */}
-      <div className="rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50/70 via-white to-violet-50/50 p-5 shadow-xs">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="p-1.5 rounded-lg bg-indigo-600 text-white shadow-xs">
-                <Bot className="h-5 w-5" />
+    <div className="relative max-w-4xl mx-auto flex flex-col h-[540px] sm:h-[650px] rounded-2xl border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm overflow-hidden">
+      {/* Toast Notification */}
+      {toastNotice && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 rounded-full bg-slate-900/90 dark:bg-slate-100/90 text-white dark:text-slate-900 px-4 py-1.5 text-xs font-medium shadow-lg backdrop-blur-sm flex items-center gap-1.5 animate-in fade-in zoom-in-95 duration-150">
+          <Check className="h-3.5 w-3.5 text-emerald-400 dark:text-emerald-600" />
+          <span>{toastNotice}</span>
+        </div>
+      )}
+
+      {/* Clean Top Bar */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/70 backdrop-blur-xs">
+        <div className="flex items-center gap-2.5">
+          <div className="h-8 w-8 rounded-xl bg-indigo-600/10 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+            {selectedPresetId === "drive_expert" && <FolderTree className="h-4 w-4" />}
+            {selectedPresetId === "fast_assistant" && <Zap className="h-4 w-4" />}
+            {selectedPresetId === "complex_architect" && <BrainCircuit className="h-4 w-4" />}
+            {selectedPresetId === "productivity_coach" && <CheckSquare className="h-4 w-4" />}
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                Drive Assistant
               </span>
-              <h2 className="font-display font-bold text-slate-900 text-xl tracking-tight">
-                Gemini Multi-Turn Chatbot
-              </h2>
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-800">
-                {selectedModel}
+              <span className="text-slate-300 dark:text-slate-700">·</span>
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                {activePreset.title}
               </span>
             </div>
-            <p className="text-xs text-slate-600 max-w-2xl leading-relaxed">
-              Engage in multi-turn conversations with customizable system instructions. Switch roles to match your task — from lightning-fast answers to deep enterprise drive architecture.
+            <p className="text-[10px] text-slate-400 dark:text-slate-500">
+              Interactive workspace companion
             </p>
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => setShowRoleConfig(!showRoleConfig)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                showRoleConfig 
-                  ? "bg-indigo-600 text-white border-indigo-600 shadow-xs" 
-                  : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
-              }`}
-            >
-              <Sliders className="h-3.5 w-3.5" />
-              Role & Model Settings
-            </button>
-            <button
-              onClick={handleExportTranscript}
-              title="Export conversation history"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 transition cursor-pointer"
-            >
-              <Download className="h-3.5 w-3.5" />
-              Export
-            </button>
-            <button
-              onClick={handleClearHistory}
-              title="Clear conversation"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-white text-rose-700 border border-rose-200 hover:bg-rose-50 transition cursor-pointer"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Reset
-            </button>
           </div>
         </div>
 
-        {/* Role & Model Drawer / Config */}
-        {showRoleConfig && (
-          <div className="mt-4 pt-4 border-t border-indigo-100 space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                Select Chatbot Persona & Role
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-                {ROLE_PRESETS.map(preset => {
-                  const isSelected = selectedPresetId === preset.id;
-                  return (
-                    <div
-                      key={preset.id}
-                      onClick={() => handleSelectPreset(preset)}
-                      className={`p-3 rounded-xl border transition cursor-pointer text-left ${
-                        isSelected 
-                          ? "bg-indigo-50/90 border-indigo-500 shadow-xs ring-1 ring-indigo-500" 
-                          : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+        {/* Compressed Actions */}
+        <div className="relative flex items-center gap-1" ref={optionsMenuRef}>
+          <button
+            onClick={handleGenerateAiSuggestions}
+            disabled={isGeneratingSuggestions}
+            title="Generate fresh suggestion ideas"
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition cursor-pointer disabled:opacity-50"
+          >
+            <Sparkles className={`h-3.5 w-3.5 ${isGeneratingSuggestions ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Ideas</span>
+          </button>
+
+          <button
+            onClick={() => setShowOptionsMenu(!showOptionsMenu)}
+            title="Chat options"
+            className="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800 transition cursor-pointer"
+          >
+            <MoreVertical className="h-4 w-4" />
+          </button>
+
+          {/* Clean Dropdown Menu */}
+          {showOptionsMenu && (
+            <div className="absolute right-0 top-full mt-1.5 w-64 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-2 shadow-xl z-50 text-xs space-y-2 animate-in fade-in zoom-in-95 duration-100">
+              <div>
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-2 py-1 block">
+                  Assistant Role
+                </span>
+                <div className="space-y-0.5">
+                  {ROLE_PRESETS.map(preset => {
+                    const isSelected = selectedPresetId === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        onClick={() => handleSelectPreset(preset)}
+                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-left transition cursor-pointer ${
+                          isSelected 
+                            ? "bg-indigo-50 text-indigo-900 dark:bg-indigo-950/50 dark:text-indigo-200 font-medium" 
+                            : "text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/70"
+                        }`}
+                      >
+                        <span>{preset.title}</span>
+                        {isSelected && <Check className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 dark:border-slate-800 pt-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 px-2 py-1 block">
+                  Model Speed & Depth
+                </span>
+                <div className="grid grid-cols-3 gap-1 px-1">
+                  {[
+                    { id: "gemini-3.1-flash-lite", label: "Fast" },
+                    { id: "gemini-3.8-flash", label: "Standard" },
+                    { id: "gemini-3.1-pro-preview", label: "Deep" }
+                  ].map(tier => (
+                    <button
+                      key={tier.id}
+                      onClick={() => {
+                        setSelectedModel(tier.id as GeminiChatModel);
+                        setToastNotice(`Model: ${tier.label}`);
+                        setTimeout(() => setToastNotice(null), 2000);
+                      }}
+                      className={`px-2 py-1 rounded-md text-[11px] font-medium transition cursor-pointer text-center ${
+                        selectedModel === tier.id
+                          ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-xs"
+                          : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700"
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-1 mb-1">
-                        <span className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
-                          {preset.id === "drive_expert" && <FolderTree className="h-3.5 w-3.5 text-indigo-600" />}
-                          {preset.id === "fast_assistant" && <Zap className="h-3.5 w-3.5 text-amber-600" />}
-                          {preset.id === "complex_architect" && <BrainCircuit className="h-3.5 w-3.5 text-purple-600" />}
-                          {preset.id === "productivity_coach" && <CheckSquare className="h-3.5 w-3.5 text-emerald-600" />}
-                          {preset.id === "custom" && <Sliders className="h-3.5 w-3.5 text-slate-600" />}
-                          {preset.title}
-                        </span>
-                        <span className="text-[10px] font-mono text-slate-500">
-                          {preset.defaultModel.replace("gemini-", "")}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 line-clamp-2 leading-snug">
-                        {preset.description}
-                      </p>
+                      {tier.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 dark:border-slate-800 pt-1.5 space-y-0.5">
+                <button
+                  onClick={handleExportTranscript}
+                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <Download className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Export Transcript</span>
+                </button>
+
+                {showConfirmClear ? (
+                  <div className="p-2 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 space-y-1.5">
+                    <span className="block text-[11px] font-medium text-rose-700 dark:text-rose-300">
+                      Clear entire conversation?
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={executeClearChat}
+                        className="flex-1 py-1 rounded bg-rose-600 text-white font-medium text-[11px] hover:bg-rose-700 transition cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        onClick={() => setShowConfirmClear(false)}
+                        className="flex-1 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[11px] hover:bg-slate-50 dark:hover:bg-slate-700 transition cursor-pointer"
+                      >
+                        Cancel
+                      </button>
                     </div>
-                  );
-                })}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowConfirmClear(true)}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition cursor-pointer"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Clear Conversation</span>
+                  </button>
+                )}
               </div>
             </div>
+          )}
+        </div>
+      </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-              <div className="md:col-span-1">
-                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Gemini Model Tier
-                </label>
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value as GeminiChatModel)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-800 shadow-2xs focus:border-indigo-500 focus:outline-none"
-                >
-                  <option value="gemini-3.8-flash">gemini-3.8-flash (General Tasks / Default)</option>
-                  <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Fast Tasks / Low Latency)</option>
-                  <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Complex Tasks / Deep Reasoning)</option>
-                </select>
-                <p className="text-[11px] text-slate-500 mt-1">
-                  Selected tier applies to future messages in this thread.
-                </p>
+      {/* Messages Feed */}
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5 bg-slate-50/40 dark:bg-slate-950/20">
+        {messages.map((msg, mIdx) => {
+          const isUser = msg.role === "user";
+          return (
+            <div
+              key={`msg-${msg.id}-${mIdx}`}
+              className={`flex gap-3 max-w-2xl ${isUser ? "ml-auto flex-row-reverse" : "mr-auto"}`}
+            >
+              {/* Clean Minimal Avatar */}
+              <div
+                className={`h-7 w-7 rounded-full flex items-center justify-center shrink-0 text-xs shadow-2xs ${
+                  isUser
+                    ? "bg-slate-900 text-white dark:bg-slate-700"
+                    : "bg-indigo-600 text-white dark:bg-indigo-500"
+                }`}
+              >
+                {isUser ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
               </div>
 
-              <div className="md:col-span-2">
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    Active System Instruction
-                  </label>
+              {/* Message Content */}
+              <div className="space-y-1 max-w-[85%] min-w-0">
+                <div className={`flex items-center gap-1.5 text-[11px] text-slate-400 dark:text-slate-500 ${isUser ? "justify-end" : ""}`}>
+                  <span>{isUser ? "You" : "Gemini"}</span>
+                  <span>·</span>
+                  <span>{msg.timestamp}</span>
+                </div>
+
+                <div
+                  className={`rounded-2xl px-4 py-3 text-xs sm:text-sm leading-relaxed whitespace-pre-wrap break-words relative group ${
+                    isUser
+                      ? "bg-indigo-600 text-white rounded-tr-xs shadow-xs"
+                      : "bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 border border-slate-200/80 dark:border-slate-700/80 rounded-tl-xs shadow-2xs"
+                  }`}
+                >
+                  {msg.content}
+
+                  {/* Discrete Copy Button */}
                   <button
-                    onClick={() => setCustomInstruction(activePreset.systemInstruction)}
-                    className="text-[11px] text-indigo-600 hover:underline flex items-center gap-1 cursor-pointer"
+                    onClick={() => handleCopy(msg.id, msg.content)}
+                    className={`absolute top-2 right-2 p-1 rounded-md opacity-0 group-hover:opacity-100 transition cursor-pointer ${
+                      isUser
+                        ? "bg-indigo-700 text-indigo-100 hover:text-white"
+                        : "bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:text-slate-800 dark:hover:text-white"
+                    }`}
+                    title="Copy response"
                   >
-                    <RotateCcw className="h-3 w-3" /> Reset to preset default
+                    {copiedId === msg.id ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
                   </button>
                 </div>
-                <textarea
-                  rows={2}
-                  value={customInstruction}
-                  onChange={(e) => setCustomInstruction(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white p-2 text-xs text-slate-800 shadow-2xs focus:border-indigo-500 focus:outline-none font-sans"
-                  placeholder="Define the role, rules, and personality for Gemini..."
-                />
               </div>
+            </div>
+          );
+        })}
+
+        {/* Empty State Hero Starters */}
+        {isStarterOnly && (
+          <div className="pt-2 pb-4 max-w-xl mx-auto space-y-2.5 animate-in fade-in duration-200">
+            <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500 block text-center">
+              Suggested prompts for your Drive
+            </span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {aiSuggestions.slice(0, 4).map((promptText, pIdx) => (
+                <button
+                  key={`hero-starter-${pIdx}`}
+                  onClick={() => handleSendMessage(promptText)}
+                  disabled={isLoading}
+                  className="p-3 text-left rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white/80 dark:bg-slate-800/60 hover:border-indigo-400 dark:hover:border-indigo-500 hover:bg-indigo-50/30 dark:hover:bg-indigo-950/20 transition cursor-pointer group shadow-2xs"
+                >
+                  <p className="text-xs text-slate-700 dark:text-slate-200 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 line-clamp-2 leading-snug">
+                    {promptText}
+                  </p>
+                  <span className="inline-flex items-center gap-1 text-[10px] text-slate-400 group-hover:text-indigo-500 mt-2 font-medium">
+                    Ask this <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" />
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
         )}
+
+        {/* Thinking Indicator */}
+        {isLoading && (
+          <div className="flex gap-3 max-w-md mr-auto animate-in fade-in duration-150">
+            <div className="h-7 w-7 rounded-full bg-indigo-600 text-white flex items-center justify-center shrink-0 animate-pulse">
+              <Bot className="h-3.5 w-3.5" />
+            </div>
+            <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700/80 rounded-2xl rounded-tl-xs px-4 py-2.5 shadow-2xs flex items-center gap-2">
+              <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">Gemini is thinking</span>
+              <span className="flex gap-1">
+                <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400 animate-bounce [animation-delay:-0.3s]"></span>
+                <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400 animate-bounce [animation-delay:-0.15s]"></span>
+                <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400 animate-bounce"></span>
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Clean Error Notice */}
+        {apiError && (
+          <div className="rounded-xl border border-rose-200 dark:border-rose-800/80 bg-rose-50/80 dark:bg-rose-950/30 p-3 text-xs text-rose-800 dark:text-rose-300 flex items-start gap-2 max-w-lg mx-auto">
+            <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400 mt-0.5" />
+            <p className="flex-1 leading-relaxed">{apiError}</p>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
       </div>
 
-      {/* Main Chat Container */}
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-xs flex flex-col h-[580px] overflow-hidden">
-        {/* Messages Thread */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 bg-slate-50/40">
-          {messages.map((msg, mIdx) => {
-            const isUser = msg.role === "user";
-            return (
-              <div
-                key={`chat-msg-${msg.id}-${mIdx}`}
-                className={`flex gap-3 max-w-3xl ${isUser ? "ml-auto flex-row-reverse" : "mr-auto"}`}
-              >
-                {/* Avatar */}
-                <div
-                  className={`h-8 w-8 rounded-full flex items-center justify-center shrink-0 shadow-2xs ${
-                    isUser
-                      ? "bg-slate-900 text-white"
-                      : "bg-indigo-600 text-white ring-2 ring-indigo-100"
-                  }`}
-                >
-                  {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
-                </div>
+      {/* Streamlined Single-Row Suggestions Strip */}
+      <div className="px-3 sm:px-4 py-2 bg-slate-50/80 dark:bg-slate-900/80 border-t border-slate-200/70 dark:border-slate-800/70 flex items-center gap-1.5 overflow-x-auto text-[11px] scrollbar-thin">
+        <button
+          onClick={handleGenerateAiSuggestions}
+          disabled={isGeneratingSuggestions}
+          title="Compose fresh ideas"
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 font-medium shrink-0 transition cursor-pointer border border-indigo-200/60 dark:border-indigo-800/60 disabled:opacity-50"
+        >
+          <Sparkles className={`h-3 w-3 ${isGeneratingSuggestions ? 'animate-spin' : ''}`} />
+          <span>Ideas</span>
+        </button>
 
-                {/* Bubble */}
-                <div className="space-y-1 max-w-[85%]">
-                  <div className={`flex items-center gap-2 text-[11px] ${isUser ? "justify-end text-slate-500" : "text-slate-500"}`}>
-                    <span className="font-semibold text-slate-700">
-                      {isUser ? "You" : "Gemini"}
-                    </span>
-                    <span>•</span>
-                    <span>{msg.timestamp}</span>
-                    {msg.modelUsed && !isUser && (
-                      <span className="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 font-mono text-[10px] border border-indigo-100">
-                        {msg.modelUsed}
-                      </span>
-                    )}
-                  </div>
+        {aiSuggestions.map((promptText, idx) => (
+          <button
+            key={`chip-${idx}`}
+            onClick={() => handleSendMessage(promptText)}
+            disabled={isLoading}
+            className="shrink-0 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-750 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700 rounded-full px-3 py-1 transition cursor-pointer disabled:opacity-50 shadow-2xs whitespace-nowrap"
+          >
+            {promptText}
+          </button>
+        ))}
+      </div>
 
-                  <div
-                    className={`rounded-2xl px-4 py-3 text-xs md:text-sm leading-relaxed shadow-2xs whitespace-pre-wrap break-words relative group ${
-                      isUser
-                        ? "bg-slate-900 text-white rounded-tr-none"
-                        : "bg-white text-slate-800 border border-slate-200 rounded-tl-none"
-                    }`}
-                  >
-                    {msg.content}
-
-                    {/* Copy action button */}
-                    <button
-                      onClick={() => handleCopy(msg.id, msg.content)}
-                      className={`absolute top-2 right-2 p-1 rounded-md transition opacity-0 group-hover:opacity-100 cursor-pointer ${
-                        isUser
-                          ? "bg-slate-800 text-slate-300 hover:text-white"
-                          : "bg-slate-100 text-slate-500 hover:text-slate-800"
-                      }`}
-                      title="Copy text"
-                    >
-                      {copiedId === msg.id ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-500" />
-                      ) : (
-                        <Copy className="h-3.5 w-3.5" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-
-          {/* Loading bubble */}
-          {isLoading && (
-            <div className="flex gap-3 max-w-3xl mr-auto">
-              <div className="h-8 w-8 rounded-full bg-indigo-600 text-white flex items-center justify-center shrink-0 animate-pulse">
-                <Bot className="h-4 w-4" />
-              </div>
-              <div className="bg-white border border-slate-200 rounded-2xl rounded-tl-none px-4 py-3 shadow-2xs flex items-center gap-2">
-                <span className="text-xs text-slate-500 font-medium">Gemini is thinking</span>
-                <span className="flex gap-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 animate-bounce [animation-delay:-0.3s]"></span>
-                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 animate-bounce [animation-delay:-0.15s]"></span>
-                  <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 animate-bounce"></span>
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* Error Message */}
-          {apiError && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800 flex items-start gap-2 max-w-2xl mx-auto">
-              <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
-              <div className="space-y-1">
-                <p className="font-semibold">Chat response error</p>
-                <p className="text-[11px] text-rose-700">{apiError}</p>
-              </div>
-            </div>
-          )}
-
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Suggested Quick Prompt Chips */}
-        <div className="px-4 py-2 bg-slate-50/80 border-t border-slate-100 flex items-center gap-1.5 overflow-x-auto text-[11px]">
-          <span className="text-slate-400 font-semibold shrink-0 flex items-center gap-1">
-            <Sparkles className="h-3 w-3 text-indigo-500" /> Ideas:
-          </span>
-          {PROMPT_CHIPS.map((chip, idx) => (
-            <button
-              key={idx}
-              onClick={() => handleSendMessage(chip)}
-              disabled={isLoading}
-              className="shrink-0 bg-white hover:bg-indigo-50 text-slate-600 hover:text-indigo-700 border border-slate-200 hover:border-indigo-200 rounded-lg px-2.5 py-1 transition cursor-pointer disabled:opacity-50"
-            >
-              {chip}
-            </button>
-          ))}
-        </div>
-
-        {/* Input Bar */}
-        <div className="p-3 md:p-4 bg-white border-t border-slate-200">
-          <div className="flex items-end gap-2 bg-slate-50 border border-slate-200 rounded-2xl p-2 focus-within:border-indigo-500 focus-within:bg-white focus-within:ring-1 focus-within:ring-indigo-500 transition">
-            <textarea
-              ref={inputRef}
-              rows={1}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={`Ask Gemini (${activePreset.title}). Press Enter to send, Shift+Enter for new line...`}
-              disabled={isLoading}
-              className="flex-1 resize-none bg-transparent px-2 py-1 text-xs md:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none max-h-28"
-            />
-            <button
-              onClick={() => handleSendMessage()}
-              disabled={!inputText.trim() || isLoading}
-              className="p-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0 cursor-pointer shadow-xs"
-              title="Send message"
-            >
-              <Send className="h-4 w-4" />
-            </button>
-          </div>
-          <div className="flex items-center justify-between text-[10px] text-slate-400 mt-2 px-1">
-            <span>Role: <strong className="text-slate-600 font-medium">{activePreset.title}</strong></span>
-            <span>Model: <strong className="text-slate-600 font-mono font-medium">{selectedModel}</strong></span>
-          </div>
+      {/* Streamlined Modern Input Bar */}
+      <div className="p-3 sm:p-4 bg-white dark:bg-slate-900 border-t border-slate-200/80 dark:border-slate-800">
+        <div className="flex items-end gap-2 bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-2xl px-3 py-2 focus-within:border-indigo-500 dark:focus-within:border-indigo-500 focus-within:bg-white dark:focus-within:bg-slate-800 transition">
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask anything about your Drive..."
+            disabled={isLoading}
+            className="flex-1 resize-none bg-transparent py-1 text-xs sm:text-sm text-slate-800 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none max-h-24 leading-relaxed"
+          />
+          <button
+            onClick={() => handleSendMessage()}
+            disabled={!inputText.trim() || isLoading}
+            className="h-8 w-8 rounded-xl bg-indigo-600 dark:bg-indigo-500 text-white flex items-center justify-center hover:bg-indigo-700 dark:hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0 cursor-pointer shadow-xs"
+            title="Send message"
+          >
+            <Send className="h-3.5 w-3.5" />
+          </button>
         </div>
       </div>
     </div>

@@ -187,26 +187,26 @@ export default function OrganizerRulesSettings({
   const activeCount = rules.filter(r => r.enabled !== false).length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div 
         id="organizer-rules-settings-modal"
-        className="w-full max-w-2xl rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90vh] text-slate-800"
+        className="w-full max-w-2xl rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden flex flex-col max-h-[90vh] text-slate-800 dark:text-slate-200"
       >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-150 flex items-center justify-between bg-slate-50/80">
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50/50 dark:bg-slate-900/50">
           <div className="flex items-center gap-2.5">
-            <div className="h-8 w-8 rounded-xl bg-indigo-50 border border-indigo-200/70 text-indigo-600 flex items-center justify-center shadow-2xs">
+            <div className="h-8 w-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200/70 dark:border-indigo-800/70 text-indigo-600 dark:text-indigo-400 flex items-center justify-center">
               <Sliders className="h-4 w-4" />
             </div>
             <div>
-              <h3 className="font-display font-bold text-slate-900 text-sm flex items-center gap-2">
-                AI Keyword Priority Rules
-                <span className="rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-semibold px-2 py-0.5">
+              <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-2">
+                <span>Keyword Priority Rules</span>
+                <span className="rounded-full bg-indigo-100 dark:bg-indigo-950/80 text-indigo-800 dark:text-indigo-300 text-[10px] font-medium px-2 py-0.5">
                   {activeCount} Active
                 </span>
               </h3>
-              <p className="text-[11px] text-slate-500">
-                Define custom keyword mappings (e.g., 'Invoice' -&gt; 'Finance') to prioritize Gemini's sorting logic.
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Match filename keywords to prioritize target folders and category groupings.
               </p>
             </div>
           </div>
@@ -214,65 +214,51 @@ export default function OrganizerRulesSettings({
           <button
             id="btn-close-rules-settings"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition cursor-pointer"
-            title="Close Settings"
+            className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition cursor-pointer"
+            title="Close"
           >
             <X className="h-4 w-4" />
           </button>
         </div>
 
         {/* Content Body */}
-        <div className="p-6 overflow-y-auto space-y-5 flex-1 text-xs">
-          {/* AI Banner Explainer */}
-          <div className="rounded-xl border border-indigo-150 bg-indigo-50/50 p-3.5 flex items-start gap-3">
-            <Sparkles className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
-            <div className="space-y-1 text-slate-600 leading-relaxed">
-              <p className="font-semibold text-indigo-950 text-xs">
-                How AI Prioritization Works
-              </p>
-              <p className="text-[11px] text-slate-600">
-                When Gemini analyzes your files and prepares folder sort layouts, any filename matching an enabled keyword is automatically prioritized into your target category and destination directory, overriding generic defaults.
-              </p>
-            </div>
-          </div>
-
+        <div className="p-6 overflow-y-auto space-y-4 flex-1 text-xs">
           {/* Add Rule Form */}
-          <form onSubmit={handleAddRule} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+          <form onSubmit={handleAddRule} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 p-4 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-900 text-xs flex items-center gap-1.5">
-                <Plus className="h-3.5 w-3.5 text-indigo-600" /> Define New Keyword Rule
+              <span className="font-semibold text-slate-900 dark:text-slate-100 text-xs flex items-center gap-1.5">
+                <Plus className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+                <span>Define Keyword Rule</span>
               </span>
-              <span className="text-[10.5px] text-slate-400">Exact or substring match</span>
+              <span className="text-[10px] text-slate-400 dark:text-slate-500">Substring match</span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
               {/* Keyword input */}
               <div className="sm:col-span-4 space-y-1">
-                <label className="text-[10.5px] font-medium text-slate-600 block">
-                  Keyword (e.g. Invoice)
+                <label className="text-[11px] font-medium text-slate-700 dark:text-slate-300 block">
+                  Keyword
                 </label>
-                <div className="relative">
-                  <input
-                    id="input-rule-keyword"
-                    type="text"
-                    value={keywordInput}
-                    onChange={(e) => { setKeywordInput(e.target.value); setErrorMsg(null); }}
-                    placeholder="e.g. Invoice"
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
-                  />
-                </div>
+                <input
+                  id="input-rule-keyword"
+                  type="text"
+                  value={keywordInput}
+                  onChange={(e) => { setKeywordInput(e.target.value); setErrorMsg(null); }}
+                  placeholder="e.g. Invoice"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
+                />
               </div>
 
               {/* Target Category selector */}
               <div className="sm:col-span-4 space-y-1">
-                <label className="text-[10.5px] font-medium text-slate-600 block">
-                  Target Category
+                <label className="text-[11px] font-medium text-slate-700 dark:text-slate-300 block">
+                  Category
                 </label>
                 <select
                   id="select-rule-category"
                   value={categoryInput}
                   onChange={(e) => handleCategoryChange(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-indigo-500 focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100 focus:border-indigo-500 focus:outline-none cursor-pointer"
                 >
                   {COMMON_CATEGORIES.map(cat => (
                     <option key={cat} value={cat}>{cat}</option>
@@ -283,7 +269,7 @@ export default function OrganizerRulesSettings({
 
               {/* Target Destination Folder */}
               <div className="sm:col-span-4 space-y-1">
-                <label className="text-[10.5px] font-medium text-slate-600 block">
+                <label className="text-[11px] font-medium text-slate-700 dark:text-slate-300 block">
                   Destination Directory
                 </label>
                 <input
@@ -292,20 +278,20 @@ export default function OrganizerRulesSettings({
                   value={folderInput}
                   onChange={(e) => setFolderInput(e.target.value)}
                   placeholder="e.g. Work/Financials"
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none font-mono"
                 />
               </div>
             </div>
 
             {/* Error or Success feedback */}
             {errorMsg && (
-              <div className="text-[11px] text-rose-600 flex items-center gap-1.5 bg-rose-50 p-2 rounded-lg border border-rose-200">
+              <div className="text-[11px] text-rose-600 dark:text-rose-400 flex items-center gap-1.5 bg-rose-50 dark:bg-rose-950/50 p-2 rounded-lg border border-rose-200 dark:border-rose-900">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0" />
                 <span>{errorMsg}</span>
               </div>
             )}
             {successMsg && (
-              <div className="text-[11px] text-emerald-700 flex items-center gap-1.5 bg-emerald-50 p-2 rounded-lg border border-emerald-200">
+              <div className="text-[11px] text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-950/50 p-2 rounded-lg border border-emerald-200 dark:border-emerald-900">
                 <Check className="h-3.5 w-3.5 shrink-0" />
                 <span>{successMsg}</span>
               </div>
@@ -315,18 +301,18 @@ export default function OrganizerRulesSettings({
               <button
                 id="btn-add-keyword-rule"
                 type="submit"
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 active:scale-95 transition cursor-pointer shadow-xs"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 transition cursor-pointer shadow-xs"
               >
                 <Plus className="h-3.5 w-3.5" />
-                <span>Add Keyword Rule</span>
+                <span>Add Rule</span>
               </button>
             </div>
           </form>
 
           {/* Quick Preset Chips */}
           <div className="space-y-1.5">
-            <span className="text-[10.5px] font-medium text-slate-500 block">
-              Quick Suggestions:
+            <span className="text-[10px] font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider block">
+              Suggested Presets
             </span>
             <div className="flex flex-wrap gap-1.5">
               {PRESET_SUGGESTIONS.map((sug) => {
@@ -337,15 +323,15 @@ export default function OrganizerRulesSettings({
                     type="button"
                     disabled={isAlreadyPresent}
                     onClick={() => handleApplyPreset(sug)}
-                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10.5px] font-medium border transition cursor-pointer ${
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-medium border transition cursor-pointer ${
                       isAlreadyPresent
-                        ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60"
-                        : "bg-white text-slate-700 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50 hover:text-indigo-700"
+                        ? "bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 border-slate-200 dark:border-slate-800 cursor-not-allowed opacity-50"
+                        : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-indigo-300 dark:hover:border-indigo-600"
                     }`}
                   >
                     <span>+ {sug.keyword}</span>
                     <ArrowRight className="h-2.5 w-2.5 text-slate-400" />
-                    <span className="font-semibold text-slate-800">{sug.category}</span>
+                    <span className="font-semibold text-slate-800 dark:text-slate-200">{sug.category}</span>
                   </button>
                 );
               })}
@@ -354,37 +340,36 @@ export default function OrganizerRulesSettings({
 
           {/* Existing Rules List */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between pb-1 border-b border-slate-150">
-              <span className="font-semibold text-slate-800 text-xs">
-                Active Priority Rules ({rules.length})
+            <div className="flex items-center justify-between pb-1.5 border-b border-slate-100 dark:border-slate-800">
+              <span className="font-semibold text-slate-900 dark:text-slate-100 text-xs">
+                Configured Rules ({rules.length})
               </span>
               <button
                 id="btn-reset-rules-defaults"
                 type="button"
                 onClick={handleResetDefaults}
-                className="inline-flex items-center gap-1 text-[11px] text-slate-500 hover:text-indigo-600 transition cursor-pointer"
-                title="Reset to recommended standard rules"
+                className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer"
               >
                 <RotateCcw className="h-3 w-3" />
-                <span>Reset to Defaults</span>
+                <span>Reset Defaults</span>
               </button>
             </div>
 
             {rules.length === 0 ? (
-              <div className="p-6 text-center text-slate-400 rounded-xl border border-dashed border-slate-200">
-                No custom keyword rules defined yet. Add one above or choose a suggestion.
+              <div className="p-6 text-center text-slate-400 dark:text-slate-500 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 text-xs">
+                No custom keyword rules defined.
               </div>
             ) : (
-              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
                 {rules.map((rule) => {
                   const isEnabled = rule.enabled !== false;
                   return (
                     <div
                       key={rule.id}
-                      className={`flex items-center justify-between gap-3 p-3 rounded-xl border transition ${
+                      className={`flex items-center justify-between gap-3 p-3 rounded-lg border transition ${
                         isEnabled
-                          ? "bg-white border-slate-200 shadow-2xs"
-                          : "bg-slate-50/60 border-slate-200/60 opacity-60"
+                          ? "bg-white dark:bg-slate-800/60 border-slate-200 dark:border-slate-700/60"
+                          : "bg-slate-50 dark:bg-slate-800/20 border-slate-200/50 dark:border-slate-800/50 opacity-60"
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
@@ -393,33 +378,33 @@ export default function OrganizerRulesSettings({
                           id={`toggle-rule-${rule.id}`}
                           type="button"
                           onClick={() => handleToggleRule(rule.id)}
-                          className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
-                            isEnabled ? "bg-indigo-600" : "bg-slate-300"
+                          className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                            isEnabled ? "bg-indigo-600 dark:bg-indigo-500" : "bg-slate-300 dark:bg-slate-600"
                           }`}
                           title={isEnabled ? "Disable rule" : "Enable rule"}
                         >
                           <span
-                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                              isEnabled ? "translate-x-4" : "translate-x-0"
+                            className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                              isEnabled ? "translate-x-3" : "translate-x-0"
                             }`}
                           />
                         </button>
 
                         {/* Rule Description */}
                         <div className="flex items-center gap-2 flex-wrap min-w-0">
-                          <span className="inline-flex items-center gap-1 font-mono font-bold text-[11.5px] bg-slate-100 text-slate-900 px-2 py-0.5 rounded border border-slate-200">
-                            <Tag className="h-3 w-3 text-indigo-600" />
+                          <span className="inline-flex items-center gap-1 font-mono font-medium text-xs bg-slate-100 dark:bg-slate-700 px-2 py-0.5 rounded text-slate-800 dark:text-slate-200">
+                            <Tag className="h-3 w-3 text-indigo-600 dark:text-indigo-400" />
                             "{rule.keyword}"
                           </span>
 
                           <ArrowRight className="h-3 w-3 text-slate-400 shrink-0" />
 
-                          <span className="inline-flex items-center gap-1 font-semibold text-[11.5px] text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+                          <span className="inline-flex items-center gap-1 font-medium text-xs text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded">
                             {rule.targetCategory}
                           </span>
 
                           {rule.targetFolder && (
-                            <span className="inline-flex items-center gap-1 text-[10.5px] text-slate-500 font-mono">
+                            <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 font-mono">
                               <Folder className="h-3 w-3 text-slate-400 shrink-0" />
                               {rule.targetFolder}
                             </span>
@@ -432,8 +417,8 @@ export default function OrganizerRulesSettings({
                         id={`delete-rule-${rule.id}`}
                         type="button"
                         onClick={() => handleDeleteRule(rule.id)}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer shrink-0"
-                        title="Delete this rule"
+                        className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 rounded transition cursor-pointer shrink-0"
+                        title="Delete rule"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -446,15 +431,15 @@ export default function OrganizerRulesSettings({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-slate-150 bg-slate-50/80 flex items-center justify-between text-xs">
-          <span className="text-[11px] text-slate-500 flex items-center gap-1.5">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-            Priority rules are saved locally and synced with Gemini.
+        <div className="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-between text-xs">
+          <span className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+            <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            Rules apply automatically during organization runs.
           </span>
           <button
             id="btn-done-rules-settings"
             onClick={onClose}
-            className="rounded-lg bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition cursor-pointer shadow-xs"
+            className="rounded-lg bg-slate-900 dark:bg-white px-3.5 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-100 transition cursor-pointer shadow-xs"
           >
             Done
           </button>

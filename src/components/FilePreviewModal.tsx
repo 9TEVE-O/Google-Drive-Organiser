@@ -3,18 +3,21 @@ import React, { useState, useEffect } from "react";
 import { 
   X, Sparkles, FileText, Calendar, HardDrive, Tag, Folder, 
   ExternalLink, Copy, Check, RefreshCw, AlertCircle, Eye, 
-  Download, Edit3, Move, CheckCircle2, ChevronRight, Layers, ArrowUpRight
+  Download, Edit3, Move, CheckCircle2, ChevronRight, Layers, ArrowUpRight,
+  FileSpreadsheet, Table, Zap, Archive, ShieldAlert, Shield
 } from "lucide-react";
-import { DriveFile } from "../types";
-import { getDriveTextFileContent } from "../lib/googleApi";
+import { DriveFile, FileDecision } from "../types";
+import { getDriveTextFileContent, getSpreadsheetValues } from "../lib/googleApi";
+import { evaluateFileDecision } from "../lib/decisionEngine";
 
 interface FilePreviewModalProps {
   file: DriveFile | null;
   token: string | null;
   onClose: () => void;
-  metadata?: { category?: string; tags?: string[]; relevance?: number };
+  metadata?: { category?: string; tags?: string[]; relevance?: number; decision?: FileDecision };
   onStartEdit?: (file: DriveFile) => void;
   onStartMove?: (file: DriveFile) => void;
+  onExecuteDecision?: (file: DriveFile, decision: any) => Promise<void>;
 }
 
 interface AISummaryData {
@@ -32,13 +35,15 @@ export default function FilePreviewModal({
   onClose,
   metadata,
   onStartEdit,
-  onStartMove
+  onStartMove,
+  onExecuteDecision
 }: FilePreviewModalProps) {
   const [copiedId, setCopiedId] = useState(false);
   const [copiedContent, setCopiedContent] = useState(false);
   
   // Content preview state for text-based files
   const [fileContent, setFileContent] = useState<string | null>(file?.content || null);
+  const [sheetPreviewRows, setSheetPreviewRows] = useState<string[][] | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   
   // Gemini AI summary state
@@ -65,7 +70,9 @@ export default function FilePreviewModal({
     setSummaryData(null);
     setSummaryError(null);
     setFileContent(file.content || null);
+    setSheetPreviewRows(null);
 
+    const isSheet = file.mimeType === "application/vnd.google-apps.spreadsheet";
     const isTextMime = 
       file.mimeType?.includes("text") || 
       file.mimeType === "application/json" ||
@@ -74,8 +81,33 @@ export default function FilePreviewModal({
       file.name.endsWith(".csv") ||
       file.name.endsWith(".json");
 
-    // 1. Fetch text content if editable and token available
+    // 1. Fetch text or spreadsheet content if accessible and token available
     const loadContent = async () => {
+      if (isSheet && token) {
+        setIsLoadingContent(true);
+        try {
+          const sheetRows = await getSpreadsheetValues(token, file.id, "Sheet1!A1:H25");
+          if (isMounted && sheetRows) {
+            setSheetPreviewRows(sheetRows);
+          }
+          if (sheetRows && sheetRows.length > 0) {
+            const tableText = sheetRows
+              .slice(0, 10)
+              .map((row, idx) => `Row ${idx + 1}: ${row.join(" | ")}`)
+              .join("\n");
+            return tableText;
+          }
+          return "";
+        } catch (err) {
+          console.warn("Could not fetch spreadsheet preview:", err);
+          return "";
+        } finally {
+          if (isMounted) {
+            setIsLoadingContent(false);
+          }
+        }
+      }
+
       if (!isTextMime) return "";
       if (file.content) return file.content;
       if (!token) return "";
@@ -186,9 +218,37 @@ export default function FilePreviewModal({
     file.name.endsWith(".md")
   );
 
-  const category = metadata?.category || file.category || "Unsorted";
-  const tags = metadata?.tags || file.tags || [];
-  const relevance = metadata?.relevance ?? file.relevance ?? 70;
+  const [isExecutingDecision, setIsExecutingDecision] = useState(false);
+  const [decisionExecutedSuccess, setDecisionExecutedSuccess] = useState(false);
+
+  // Evaluate dynamic file classification and actionable decision so zero items remain "Unsorted"
+  const dynamicEval = React.useMemo(() => {
+    if (!file) return null;
+    if (!file.category || file.category === "Unsorted" || !file.decision) {
+      return evaluateFileDecision(file);
+    }
+    return file;
+  }, [file]);
+
+  const category = metadata?.category || file.category || dynamicEval?.category || "General Documents";
+  const tags = metadata?.tags || file.tags || dynamicEval?.tags || [];
+  const relevance = metadata?.relevance ?? file.relevance ?? dynamicEval?.relevance ?? 75;
+  const decision: FileDecision | undefined = metadata?.decision || file.decision || dynamicEval?.decision;
+
+  const handleExecuteDecisionClick = async () => {
+    if (!decision || isExecutingDecision) return;
+    setIsExecutingDecision(true);
+    try {
+      if (onExecuteDecision) {
+        await onExecuteDecision(file, decision);
+      }
+      setDecisionExecutedSuccess(true);
+    } catch (err) {
+      console.error("Execute decision failed:", err);
+    } finally {
+      setIsExecutingDecision(false);
+    }
+  };
 
   const handleCopyId = () => {
     navigator.clipboard.writeText(file.id);
@@ -465,6 +525,99 @@ export default function FilePreviewModal({
             )}
           </div>
 
+          {/* Autonomous AI Decision & Triage Control Card */}
+          {decision && (
+            <div className="rounded-2xl border border-indigo-200/90 dark:border-indigo-800/80 bg-gradient-to-br from-indigo-50/70 via-purple-50/40 to-slate-50 dark:from-indigo-950/40 dark:via-purple-950/30 dark:to-slate-900/60 p-5 shadow-xs space-y-3.5">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <div className="h-7 w-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                    <Zap className="h-4 w-4 fill-white" />
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-xs text-indigo-950 dark:text-indigo-200 tracking-tight font-display">
+                      Autonomous Decision System Triage
+                    </h4>
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono block">
+                      Target Folder: <span className="font-semibold text-indigo-700 dark:text-indigo-300">/{decision.targetFolder}</span>
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {/* Urgency Badge */}
+                  <span className={`inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border ${
+                    decision.urgency === 'high'
+                      ? 'bg-rose-100 text-rose-800 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
+                      : decision.urgency === 'medium'
+                      ? 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
+                      : 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
+                  }`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${
+                      decision.urgency === 'high' ? 'bg-rose-500 animate-pulse' : decision.urgency === 'medium' ? 'bg-amber-500' : 'bg-slate-400'
+                    }`} />
+                    {decision.urgency.toUpperCase()} URGENCY
+                  </span>
+
+                  {/* Confidence Badge */}
+                  <span className="inline-flex items-center text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full bg-indigo-100/80 text-indigo-800 border border-indigo-200/60 dark:bg-indigo-900/60 dark:text-indigo-300 dark:border-indigo-800">
+                    {decision.confidence}% Conf.
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Banner & Rationale */}
+              <div className="bg-white/90 dark:bg-slate-900/90 rounded-xl p-3.5 border border-indigo-100/80 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold ${
+                      decision.decisionType === 'relocate'
+                        ? 'bg-indigo-600 text-white'
+                        : decision.decisionType === 'archive'
+                        ? 'bg-amber-600 text-white'
+                        : 'bg-emerald-600 text-white'
+                    }`}>
+                      {decision.decisionType === 'relocate' && <Move className="h-3 w-3" />}
+                      {decision.decisionType === 'archive' && <Archive className="h-3 w-3" />}
+                      {decision.decisionType === 'verified' && <CheckCircle2 className="h-3 w-3" />}
+                      {decision.action}
+                    </span>
+                  </div>
+
+                  {/* Execution button */}
+                  {onExecuteDecision && (
+                    decisionExecutedSuccess || decision.status === 'applied' || decision.decisionType === 'verified' ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-1 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                        <Check className="h-3.5 w-3.5 text-emerald-600" /> Decision Applied
+                      </span>
+                    ) : (
+                      <button
+                        onClick={handleExecuteDecisionClick}
+                        disabled={isExecutingDecision}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 text-xs font-semibold shadow-xs hover:shadow-md transition active:scale-95 cursor-pointer disabled:opacity-50"
+                      >
+                        {isExecutingDecision ? (
+                          <>
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            <span>Executing...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Zap className="h-3.5 w-3.5 fill-white" />
+                            <span>Execute Decision</span>
+                          </>
+                        )}
+                      </button>
+                    )
+                  )}
+                </div>
+
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed pt-0.5">
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">AI Rationale:</span> {decision.rationale}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Basic File Details Grid */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs space-y-3.5">
             <h4 className="font-semibold text-xs text-slate-900 uppercase tracking-wider">
@@ -477,11 +630,7 @@ export default function FilePreviewModal({
                 <span className="text-slate-500 font-medium flex items-center gap-1.5">
                   <Folder className="h-3.5 w-3.5 text-slate-400" /> Category:
                 </span>
-                <span className={`font-semibold px-2 py-0.5 rounded-full text-[11px] ${
-                  category === "Unsorted" 
-                    ? "bg-slate-200 text-slate-700" 
-                    : "bg-indigo-100 text-indigo-800"
-                }`}>
+                <span className="font-semibold px-2 py-0.5 rounded-full text-[11px] bg-indigo-100 text-indigo-800">
                   {category}
                 </span>
               </div>
@@ -581,8 +730,69 @@ export default function FilePreviewModal({
             </div>
           </div>
 
+          {/* Google Sheets Table Preview */}
+          {file.mimeType === "application/vnd.google-apps.spreadsheet" && (
+            <div className="rounded-2xl border border-emerald-200 bg-white p-5 shadow-2xs space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="font-semibold text-xs text-emerald-950 uppercase tracking-wider flex items-center gap-1.5">
+                  <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" /> Google Sheets Spreadsheet Preview
+                </h4>
+                {file.webViewLink && (
+                  <a
+                    href={file.webViewLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 hover:underline"
+                  >
+                    Open in Google Sheets <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+
+              {isLoadingContent ? (
+                <div className="py-8 flex flex-col items-center justify-center text-xs text-slate-400">
+                  <div className="h-5 w-5 border-2 border-emerald-600 border-t-transparent animate-spin rounded-full mb-2"></div>
+                  <span>Fetching spreadsheet cells...</span>
+                </div>
+              ) : sheetPreviewRows && sheetPreviewRows.length > 0 && Array.isArray(sheetPreviewRows[0]) ? (
+                <div className="overflow-x-auto rounded-xl border border-emerald-100 max-h-56">
+                  <table className="w-full text-[11px] font-mono divide-y divide-emerald-100">
+                    <thead className="bg-emerald-50 text-emerald-900 sticky top-0 font-semibold">
+                      <tr>
+                        <th className="px-2.5 py-1.5 text-center text-emerald-700 border-r border-emerald-100 w-10">#</th>
+                        {(sheetPreviewRows[0] || []).map((col, idx) => (
+                          <th key={`head-${idx}`} className="px-3 py-1.5 text-left border-r border-emerald-100 last:border-0 truncate max-w-[150px]">
+                            {col || `Col ${idx + 1}`}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {sheetPreviewRows.slice(1, 15).map((row, rIdx) => (
+                        <tr key={`row-${rIdx}`} className="hover:bg-slate-50">
+                          <td className="px-2.5 py-1 text-center text-slate-400 border-r border-slate-100 bg-slate-50/50">
+                            {rIdx + 2}
+                          </td>
+                          {(sheetPreviewRows[0] || []).map((_, cIdx) => (
+                            <td key={`cell-${rIdx}-${cIdx}`} className="px-3 py-1 text-slate-700 border-r border-slate-100 last:border-0 truncate max-w-[150px]">
+                              {row ? row[cIdx] || "" : ""}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 italic py-2">
+                  This spreadsheet is currently blank or contains no accessible data on the first sheet.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Text Content Preview (if text-based file) */}
-          {(fileContent !== null || isLoadingContent) && (
+          {file.mimeType !== "application/vnd.google-apps.spreadsheet" && (fileContent !== null || isLoadingContent) && (
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-2xs space-y-2.5">
               <div className="flex items-center justify-between">
                 <h4 className="font-semibold text-xs text-slate-900 uppercase tracking-wider flex items-center gap-1.5">

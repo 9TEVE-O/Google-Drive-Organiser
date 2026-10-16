@@ -2,14 +2,16 @@ import { geminiFetch } from "../lib/geminiApi";
 import React, { useState, useEffect } from "react";
 import { 
   CheckSquare, Calendar, Bell, Send, Trash2, Plus, Clock, 
-  Mail, Settings, ChevronRight, CheckCircle2, RefreshCw, Layers, Eye 
+  Mail, Settings, ChevronRight, CheckCircle2, RefreshCw, Layers, Eye,
+  FolderPlus, FileEdit, Move, Play, Filter, Check
 } from "lucide-react";
-import { TaskItem, ActivityLog } from "../types";
+import { TaskItem, ActivityLog, SmartTaskReminder, DriveFile, EmailApprovalRequest } from "../types";
 import { 
   listTaskLists, createTaskList, listTasks, createGoogleTask, 
   updateGoogleTask, deleteGoogleTask, sendGmailReport 
 } from "../lib/googleApi";
 import InfoTooltip from "./InfoTooltip";
+import ContextualActionToolbar from "./ContextualActionToolbar";
 
 function escapeHtml(str: string): string {
   return str
@@ -26,8 +28,12 @@ interface TaskManagerProps {
   userEmail: string;
   activities: ActivityLog[];
   onTriggerNotification: (title: string, message: string) => void;
-  reminders: { id: string; title: string; triggerTime: string; status: 'active' | 'fired'; notified: boolean }[];
-  setReminders: React.Dispatch<React.SetStateAction<{ id: string; title: string; triggerTime: string; status: 'active' | 'fired'; notified: boolean }[]>>;
+  reminders: SmartTaskReminder[];
+  setReminders: React.Dispatch<React.SetStateAction<SmartTaskReminder[]>>;
+  files?: DriveFile[];
+  onOpenScheduleModal?: (file?: DriveFile) => void;
+  onExecuteReminderAction?: (reminder: SmartTaskReminder) => void;
+  onEmailApprovalRequest?: (request: EmailApprovalRequest) => void;
 }
 
 export default function TaskManager({
@@ -37,8 +43,13 @@ export default function TaskManager({
   activities,
   onTriggerNotification,
   reminders,
-  setReminders
+  setReminders,
+  files = [],
+  onOpenScheduleModal,
+  onExecuteReminderAction,
+  onEmailApprovalRequest
 }: TaskManagerProps) {
+  const [reminderFilter, setReminderFilter] = useState<'all' | 'active' | 'actions' | 'completed'>('all');
   // Google Tasks category state
   const [taskLists, setTaskLists] = useState<any[]>([]);
   const [selectedListId, setSelectedListId] = useState<string>("");
@@ -184,15 +195,24 @@ export default function TaskManager({
   // Configuration schedules
   const handleAddReminder = () => {
     if (!newReminderTitle || !newReminderTime) return;
-    const item = {
-      id: "rem_" + Date.now(),
-      title: newReminderTitle,
+    const now = new Date();
+    const item: SmartTaskReminder = {
+      id: "rem_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+      title: newReminderTitle.trim(),
+      triggerDate: now.toISOString().slice(0, 10),
       triggerTime: newReminderTime,
-      status: 'active' as const,
-      notified: false
+      recurrence: 'once',
+      actionType: 'reminder_only',
+      notifyInApp: true,
+      notifyEmail: false,
+      status: 'active',
+      notified: false,
+      executed: false,
+      createdAt: new Date().toISOString()
     };
-    setReminders([...reminders, item]);
+    setReminders([item, ...reminders]);
     addLog("task", `Scheduled alarm reminder: "${newReminderTitle}"`, `Alarm Time: ${newReminderTime}`);
+    onTriggerNotification("Reminder Created", `"${newReminderTitle}" set for ${newReminderTime}`);
     setNewReminderTitle("");
     setNewReminderTime("");
   };
@@ -201,26 +221,6 @@ export default function TaskManager({
   const handleRemoveReminder = (id: string) => {
     setReminders(reminders.filter(r => r.id !== id));
   };
-
-  // Trigger scanning clocks periodically in the background (Simulate reminder fire checks)
-  useEffect(() => {
-    const clockInterval = setInterval(() => {
-      const now = new Date();
-      const currentHourMin = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
-      setReminders(prev => prev.map(rem => {
-        if (rem.triggerTime === currentHourMin && !rem.notified) {
-          // Play classic visual notification + trigger system alerts chime
-          onTriggerNotification("Task Alarm Executed!", rem.title);
-          addLog("task", `Automated reminder alarm fired: "${rem.title}"`, `Trigger Time: ${rem.triggerTime}`);
-          return { ...rem, status: 'fired', notified: true };
-        }
-        return rem;
-      }));
-    }, 15000); // Check every 15s
-
-    return () => clearInterval(clockInterval);
-  }, [reminders, onTriggerNotification]);
 
   // Create Beautiful Custom report using Gemini Server route
   const handleComposeSummaryReport = async () => {
@@ -278,9 +278,24 @@ export default function TaskManager({
     }
   };
 
-  // Push actual email out to Gmail Send API! (MANDATORY Permission Check)
+  // Push actual email out to Gmail Send API! (MANDATORY Permission & Human Approval Check)
   const handleSendEmailReportNow = async () => {
     if (!token || !composedHtml || !composedSubject) return;
+
+    // Enforce human approval modal gate
+    if (onEmailApprovalRequest) {
+      onEmailApprovalRequest({
+        id: "email_appr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+        recipientEmail: userEmail,
+        subject: composedSubject,
+        triggerReason: `User requested activity report digest (${activities.length} operations)`,
+        htmlBody: composedHtml,
+        timestamp: new Date().toISOString()
+      });
+      setShowReportPreview(false);
+      return;
+    }
+
     const confirmSend = window.confirm(`Confirm permission to deliver automated activity report directly to email address: ${userEmail}?`);
     if (!confirmSend) return;
 
@@ -288,7 +303,6 @@ export default function TaskManager({
     try {
       await sendGmailReport(token, userEmail, composedSubject, composedHtml);
       addLog("email", `Delivered automated HTML activity report to ${userEmail}`, `Subject: ${composedSubject}`);
-      addLog("email", `Automated Email Report delivered successfully to ${userEmail}!`);
       setShowReportPreview(false);
     } catch (e: any) {
        console.error("Error sending email:", e);
@@ -303,14 +317,13 @@ export default function TaskManager({
         
         {/* LEFT PANEL: Google Tasks List and creation */}
         <div className="lg:col-span-7 space-y-4">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 px-5 py-3.5 bg-slate-50/50 dark:bg-slate-900/50">
               <div className="space-y-0.5">
-                <h3 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
-                  <CheckSquare className="h-4.5 w-4.5 text-indigo-600" /> Google Tasks Sync
-                  <InfoTooltip text="Manage your actual Google Tasks directly from this panel." />
+                <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-xs flex items-center gap-1.5">
+                  <CheckSquare className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                  <span>Google Tasks Synchronization</span>
                 </h3>
-                <p className="text-[11px] text-slate-400">Integrated categories and items inside Google Tasks platform.</p>
               </div>
 
               {/* List switch selectors */}
@@ -322,13 +335,19 @@ export default function TaskManager({
                       id="new-list-title-input"
                       value={newListTitle}
                       onChange={e => setNewListTitle(e.target.value)}
-                      placeholder="Category..."
-                      className="rounded border border-slate-200 px-2 py-1 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                      placeholder="Category name..."
+                      className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 text-xs text-slate-900 dark:text-slate-100 focus:border-indigo-500 focus:outline-none"
                     />
-                    <button onClick={handleAddCategoryAction} className="p-1 px-2 text-[10px] font-bold bg-indigo-600 text-white rounded">
-                      Add
+                    <button 
+                      onClick={handleAddCategoryAction} 
+                      className="px-2.5 py-1 text-xs font-medium bg-indigo-600 dark:bg-indigo-500 text-white rounded-lg hover:bg-indigo-700 dark:hover:bg-indigo-600 transition cursor-pointer"
+                    >
+                      Save
                     </button>
-                    <button onClick={() => setIsCreatingList(false)} className="text-slate-400 text-xs text-[10px]">
+                    <button 
+                      onClick={() => setIsCreatingList(false)} 
+                      className="text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 text-xs px-1 cursor-pointer"
+                    >
                       Cancel
                     </button>
                   </div>
@@ -338,7 +357,7 @@ export default function TaskManager({
                       id="select-task-list"
                       value={selectedListId}
                       onChange={e => handleSelectCategory(e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-white py-1 px-2 text-xs font-semibold text-slate-600 focus:outline-none focus:border-indigo-500"
+                      className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 px-2.5 text-xs font-medium text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
                     >
                       {taskLists.map((list, lIdx) => (
                         <option key={`task-list-${list.id}-${lIdx}`} value={list.id}>{list.title}</option>
@@ -347,75 +366,72 @@ export default function TaskManager({
                     <button
                       id="btn-create-taskset"
                       onClick={() => setIsCreatingList(true)}
-                      className="text-xs text-indigo-600 hover:underline font-semibold"
+                      className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline font-medium cursor-pointer"
                     >
-                      + Category
+                      + New List
                     </button>
                   </>
                 )}
               </div>
             </div>
 
-            {/* Loading elements */}
-            {isTaskLoading ? (
-              <div className="flex flex-col items-center justify-center py-10">
-                <RefreshCw className="h-5 w-5 animate-spin text-indigo-600 mb-2" />
-                <span className="text-xs font-mono text-slate-400">Syncing task items...</span>
-              </div>
-            ) : (
-              <div className="space-y-3.5">
-                {/* Form to add item */}
-                <div className="bg-slate-50 border border-slate-150 rounded-xl p-4.5 space-y-2.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">Create New Task Item</span>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    <input
-                      id="input-task-title"
-                      type="text"
-                      value={newTitle}
-                      onChange={e => setNewTitle(e.target.value)}
-                      placeholder="What needs to be done?..."
-                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
-                    />
-                    <input
-                      type="date"
-                      id="input-task-due"
-                      value={newDueDate}
-                      onChange={e => setNewDueDate(e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 focus:outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                  
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      id="input-task-notes"
-                      value={newNotes}
-                      onChange={e => setNewNotes(e.target.value)}
-                      placeholder="Add brief task notes/description (optional)..."
-                      className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs focus:outline-none focus:border-indigo-500"
-                    />
-                    <button
-                      id="btn-confirm-add-task"
-                      onClick={handleAddTaskItem}
-                      disabled={!newTitle}
-                      className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition"
-                    >
-                      Add Task
-                    </button>
-                  </div>
+            <div className="p-5 space-y-4">
+              {/* Form to add item */}
+              <div className="bg-slate-50/70 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 space-y-2.5">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  <input
+                    id="input-task-title"
+                    type="text"
+                    value={newTitle}
+                    onChange={e => setNewTitle(e.target.value)}
+                    placeholder="Task title..."
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <input
+                    type="date"
+                    id="input-task-due"
+                    value={newDueDate}
+                    onChange={e => setNewDueDate(e.target.value)}
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500"
+                  />
                 </div>
+                
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    id="input-task-notes"
+                    value={newNotes}
+                    onChange={e => setNewNotes(e.target.value)}
+                    placeholder="Notes or description (optional)..."
+                    className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    id="btn-confirm-add-task"
+                    onClick={handleAddTaskItem}
+                    disabled={!newTitle}
+                    className="rounded-lg bg-indigo-600 dark:bg-indigo-500 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 disabled:opacity-40 transition cursor-pointer shadow-xs shrink-0"
+                  >
+                    Add Task
+                  </button>
+                </div>
+              </div>
 
-                {/* Task Checklist list items */}
-                <div className="space-y-2 max-h-[290px] overflow-y-auto pr-1">
+              {/* Task Checklist list items */}
+              {isTaskLoading ? (
+                <div className="flex flex-col items-center justify-center py-10">
+                  <RefreshCw className="h-5 w-5 animate-spin text-indigo-600 dark:text-indigo-400 mb-2" />
+                  <span className="text-xs text-slate-400 dark:text-slate-500">Loading tasks...</span>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
                   {tasks.map((task, tIdx) => (
                     <div 
                       key={`task-item-${task.id}-${tIdx}`} 
                       id={`task-item-${task.id}`}
-                      className={`flex items-center justify-between p-3.5 rounded-lg border transition ${
+                      className={`flex items-center justify-between p-3 rounded-lg border transition ${
                         task.status === "completed" 
-                          ? "bg-slate-50/50 border-slate-100 opacity-60 line-through" 
-                          : "bg-white border-slate-150 hover:border-indigo-100"
+                          ? "bg-slate-50/50 dark:bg-slate-800/20 border-slate-100 dark:border-slate-800/50 opacity-60 line-through" 
+                          : "bg-white dark:bg-slate-800/60 border-slate-200 dark:border-slate-700/60 hover:border-slate-300 dark:hover:border-slate-600"
                       }`}
                     >
                       <div className="flex items-start gap-2.5 min-w-0">
@@ -423,19 +439,19 @@ export default function TaskManager({
                           type="checkbox"
                           checked={task.status === "completed"}
                           onChange={() => handleToggleTaskStatus(task)}
-                          className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 shrink-0 cursor-pointer"
+                          className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500 shrink-0 cursor-pointer"
                         />
                         <div className="min-w-0">
-                          <span className="text-slate-800 text-xs font-medium block truncate">
+                          <span className="text-slate-800 dark:text-slate-200 text-xs font-medium block truncate">
                             {task.title}
                           </span>
                           {task.notes && (
-                            <span className="text-[10px] text-slate-400 truncate block">
+                            <span className="text-[11px] text-slate-400 dark:text-slate-500 truncate block">
                               {task.notes}
                             </span>
                           )}
                           {task.due && (
-                            <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1 py-0.5 text-[9px] text-slate-500 font-mono font-medium mt-1">
+                            <span className="inline-flex items-center gap-1 rounded bg-slate-100 dark:bg-slate-700/60 px-1.5 py-0.5 text-[10px] text-slate-600 dark:text-slate-300 font-mono mt-1">
                               <Calendar className="h-2.5 w-2.5" /> Due: {new Date(task.due).toLocaleDateString()}
                             </span>
                           )}
@@ -444,8 +460,8 @@ export default function TaskManager({
 
                       <button
                         onClick={() => handleDeleteTaskAction(task.id, task.title)}
-                        className="rounded p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition shrink-0"
-                        title="Remove task permanently"
+                        className="rounded p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition shrink-0 cursor-pointer"
+                        title="Delete task"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -453,32 +469,69 @@ export default function TaskManager({
                   ))}
 
                   {tasks.length === 0 && (
-                    <span className="text-slate-400 text-xs text-center py-6 block font-medium">No tasks found inside category list.</span>
+                    <div className="py-4">
+                      <ContextualActionToolbar
+                        activeTab="tasks"
+                        isEmptyState={true}
+                        emptyTitle="No tasks found in this list"
+                        emptyDescription="Create action items and deadlines, or generate automated summary executive reports."
+                        onActionSelect={(actionId) => {
+                          if (actionId === 'new-task') {
+                            document.getElementById('input-task-title')?.focus();
+                          } else if (actionId === 'send-report') {
+                            handleComposeSummaryReport();
+                          } else if (actionId === 'sync-tasks' && selectedListId) {
+                            loadTasksForList(selectedListId);
+                          }
+                        }}
+                      />
+                    </div>
                   )}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
 
-        {/* RIGHT PANEL: Clock Alarm Schedulers & Gmail Automated reports */}
+        {/* RIGHT PANEL: Smart Task Reminders & Scheduled Actions Engine */}
         <div className="lg:col-span-5 space-y-4">
-          {/* Custom schedules alarms */}
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
-            <h3 className="font-semibold text-slate-900 text-xs uppercase tracking-wider text-slate-500 flex items-center gap-1.5 border-b border-slate-100 pb-2">
-              <Clock className="h-4.5 w-4.5 text-slate-400" /> Automated Active Timers
-              <InfoTooltip text="Setup a recurring daily alarm to make sure you never forget a routine task you must do in your application." />
-            </h3>
+          
+          {/* Smart Task Reminders & Actions Console */}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400">
+                  <Bell className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-xs">
+                    Smart Reminders & Scheduled Actions
+                  </h3>
+                  <p className="text-[10px] text-slate-400">Automated file operations & recurring alarms</p>
+                </div>
+              </div>
 
-            {/* Input additions */}
+              {onOpenScheduleModal && (
+                <button
+                  type="button"
+                  onClick={() => onOpenScheduleModal()}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-medium flex items-center gap-1 shadow-xs transition cursor-pointer"
+                >
+                  <Plus className="h-3 w-3" />
+                  <span>Schedule</span>
+                </button>
+              )}
+            </div>
+
+            {/* Quick in-line alarm adder */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
               <input
                 id="reminder-title-input"
                 type="text"
                 value={newReminderTitle}
                 onChange={e => setNewReminderTitle(e.target.value)}
-                placeholder="Alarm Label (e.g., Weekly Sync)"
-                className="rounded border border-slate-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-slate-50"
+                placeholder="Quick reminder title..."
+                className="rounded-lg border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-indigo-500 bg-white dark:bg-slate-800"
               />
               <div className="flex gap-1.5">
                 <input
@@ -486,61 +539,162 @@ export default function TaskManager({
                   type="time"
                   value={newReminderTime}
                   onChange={e => setNewReminderTime(e.target.value)}
-                  className="rounded border border-slate-200 px-2 py-1 focus:outline-none focus:ring-1 focus:ring-indigo-500 bg-slate-50 flex-1 text-slate-600 text-xs"
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 px-2 py-1.5 focus:outline-none focus:border-indigo-500 bg-white dark:bg-slate-800 flex-1 text-slate-700 dark:text-slate-200 text-xs"
                 />
                 <button
                   id="btn-add-reminder"
                   onClick={handleAddReminder}
                   disabled={!newReminderTitle || !newReminderTime}
-                  className="rounded-lg bg-indigo-600 text-white font-semibold text-xs px-3 hover:bg-indigo-700 disabled:opacity-50"
+                  className="rounded-lg bg-indigo-600 dark:bg-indigo-500 text-white font-medium text-xs px-3 py-1.5 hover:bg-indigo-700 dark:hover:bg-indigo-600 disabled:opacity-40 transition cursor-pointer shadow-xs shrink-0"
                 >
                   Set
                 </button>
               </div>
             </div>
 
-            {/* Listing active reminders */}
-            <div className="space-y-1.5 max-h-[160px] overflow-y-auto">
-              {reminders.map((rem, rIdx) => (
-                <div key={`taskmgr-rem-${rem.id}-${rIdx}`} className="p-2 bg-slate-50 border border-slate-100 rounded-lg flex items-center justify-between text-xs">
-                  <div className="min-w-0">
-                    <span className="font-semibold text-slate-800 block truncate leading-snug">{rem.title}</span>
-                    <span className="text-[10px] font-mono text-slate-450 text-slate-400">Trigger at: {rem.triggerTime} • Status: {rem.status}</span>
-                  </div>
-                  <button
-                    onClick={() => handleRemoveReminder(rem.id)}
-                    className="p-1 text-slate-400 hover:text-rose-500 rounded"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
+            {/* Filters */}
+            <div className="flex items-center gap-1.5 pt-1 border-t border-slate-100 dark:border-slate-800 text-[11px]">
+              {(['all', 'active', 'actions', 'completed'] as const).map(tab => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setReminderFilter(tab)}
+                  className={`px-2 py-0.5 rounded-md font-medium capitalize transition cursor-pointer ${
+                    reminderFilter === tab
+                      ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 font-semibold'
+                      : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {tab}
+                </button>
               ))}
+            </div>
+
+            {/* Listing active reminders */}
+            <div className="space-y-2 max-h-[220px] overflow-y-auto">
+              {reminders
+                .filter(rem => {
+                  if (reminderFilter === 'active') return rem.status === 'active';
+                  if (reminderFilter === 'actions') return rem.actionType && rem.actionType !== 'reminder_only';
+                  if (reminderFilter === 'completed') return rem.status === 'completed' || rem.status === 'fired';
+                  return true;
+                })
+                .map((rem, rIdx) => (
+                  <div 
+                    key={`taskmgr-rem-${rem.id}-${rIdx}`} 
+                    className="p-3 bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 rounded-xl space-y-1.5 text-xs transition"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{rem.title}</span>
+                          
+                          {/* Recurrence badge */}
+                          {rem.recurrence && rem.recurrence !== 'once' && (
+                            <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-indigo-100/70 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 font-medium">
+                              {rem.recurrence}
+                            </span>
+                          )}
+
+                          {/* Action badge */}
+                          {rem.actionType === 'create_folder' && (
+                            <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-emerald-100/70 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 font-medium flex items-center gap-1">
+                              <FolderPlus className="h-2.5 w-2.5" /> Folder
+                            </span>
+                          )}
+                          {rem.actionType === 'edit_doc' && (
+                            <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-amber-100/70 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 font-medium flex items-center gap-1">
+                              <FileEdit className="h-2.5 w-2.5" /> Doc Note
+                            </span>
+                          )}
+                          {rem.actionType === 'relocate_file' && (
+                            <span className="text-[9px] uppercase font-mono px-1.5 py-0.2 rounded bg-purple-100/70 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 font-medium flex items-center gap-1">
+                              <Move className="h-2.5 w-2.5" /> Move
+                            </span>
+                          )}
+                        </div>
+
+                        {rem.targetFileName && (
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                            Target: {rem.targetFileName}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        {rem.actionType && rem.actionType !== 'reminder_only' && onExecuteReminderAction && (
+                          <button
+                            type="button"
+                            title="Run action now"
+                            onClick={() => onExecuteReminderAction(rem)}
+                            className="p-1 text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded transition cursor-pointer"
+                          >
+                            <Play className="h-3 w-3" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveReminder(rem.id)}
+                          className="p-1 text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 rounded transition cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 dark:text-slate-500 pt-1 border-t border-slate-100 dark:border-slate-800/80">
+                      <span>Trigger: {rem.triggerDate ? `${rem.triggerDate} ` : ''}{rem.triggerTime}</span>
+                      <div className="flex items-center gap-1.5">
+                        {rem.notifyInApp && <span title="In-App Alert">🔔 App</span>}
+                        {rem.notifyEmail && <span title="Email Notice">📧 Mail</span>}
+                        <span className={`px-1 py-0.2 rounded ${
+                          rem.status === 'completed' 
+                            ? 'text-emerald-600 dark:text-emerald-400 font-medium' 
+                            : rem.status === 'fired' 
+                            ? 'text-amber-600 dark:text-amber-400 font-medium' 
+                            : 'text-slate-500'
+                        }`}>
+                          {rem.status}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+              {reminders.length === 0 && (
+                <div className="text-center py-6 text-slate-400 dark:text-slate-500 text-xs">
+                  No reminders scheduled yet. Add one above or schedule with file actions.
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Email Automated reports via Gemini styling */}
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm space-y-3.5">
-            <h3 className="font-semibold text-slate-900 text-xs uppercase tracking-wider text-slate-505 text-slate-500 flex items-center gap-1.5 border-b border-slate-100 pb-2">
-              <Mail className="h-4.5 w-4.5 text-slate-400" /> Executive Digest Mailer
+          {/* Email Automated reports via Gemini styling (Desktop Power Feature) */}
+          <div className="hidden md:block rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs space-y-3.5">
+            <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5 border-b border-slate-100 dark:border-slate-800 pb-2.5">
+              <Mail className="h-3.5 w-3.5 text-slate-400" />
+              <span>Activity Digest Mailer</span>
             </h3>
 
-            <p className="text-[11px] text-slate-400 leading-normal">
-              Collate Drive modifications, backing, and todo details. Composes structured CSS-styled email summaries utilizing server-side Gemini intelligence.
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              Compile recent Google Drive activities, sync runs, and checklist statuses into a formatted email report sent to your connected account.
             </p>
 
             <button
               id="btn-compose-digest"
               onClick={handleComposeSummaryReport}
               disabled={isComposingReport || activities.length === 0}
-              className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-indigo-600 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 transition disabled:opacity-50"
+              className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-indigo-600 dark:bg-indigo-500 py-2 px-3 text-xs font-medium text-white hover:bg-indigo-700 dark:hover:bg-indigo-600 transition disabled:opacity-40 cursor-pointer shadow-xs"
             >
               {isComposingReport ? (
                 <>
-                  <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Structuring Mail Layout...
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  <span>Composing Report...</span>
                 </>
               ) : (
                 <>
-                  <Send className="h-3.5 w-3.5" /> Compose Automated Report
+                  <Send className="h-3.5 w-3.5" />
+                  <span>Generate & Preview Email Digest</span>
                 </>
               )}
             </button>
@@ -550,56 +704,59 @@ export default function TaskManager({
 
       {/* REPORT MODAL PREVIEW */}
       {showReportPreview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-2xl border border-slate-100 bg-white p-6 shadow-xl animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl animate-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 mb-4">
               <div>
-                <h3 className="font-display font-bold text-slate-950 text-lg">Automated Executive Report Preview</h3>
-                <p className="text-xs text-slate-400">Review layout from Gemini before pushing email out.</p>
+                <h3 className="font-semibold text-slate-900 dark:text-slate-100 text-base">Activity Report Preview</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Review the digest before sending to your inbox.</p>
               </div>
-              <button onClick={() => setShowReportPreview(false)} className="text-slate-400 hover:text-slate-600">
-                Cancel
+              <button 
+                onClick={() => setShowReportPreview(false)} 
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xs font-medium cursor-pointer"
+              >
+                Close
               </button>
             </div>
 
             {/* Email Subject preview */}
-            <div className="p-3 bg-slate-50 rounded-lg border border-slate-150 text-xs font-semibold text-slate-800 mb-3 block">
-              <span className="text-slate-400 font-mono">Subject:</span> {composedSubject}
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-200 dark:border-slate-700/60 text-xs font-medium text-slate-800 dark:text-slate-200 mb-3">
+              <span className="text-slate-400 font-normal">Subject: </span>{composedSubject}
             </div>
 
-            {/* Structured Report Preview: Safe native presentation without raw HTML embedding */}
-            <div className="flex-1 overflow-y-auto border border-slate-200 rounded-xl bg-slate-50/50 p-4 mb-4 space-y-3 max-h-72">
-              <div className="flex items-center justify-between bg-white p-3 rounded-lg border border-slate-150">
+            {/* Structured Report Preview */}
+            <div className="flex-1 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/50 dark:bg-slate-800/30 p-4 mb-4 space-y-3 max-h-72">
+              <div className="flex items-center justify-between bg-white dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800">
                 <div className="space-y-0.5">
-                  <span className="text-[10px] uppercase font-mono tracking-wider font-semibold text-indigo-600">Report Status</span>
-                  <p className="text-xs font-semibold text-slate-900">Email Digest Ready for Dispatch</p>
+                  <span className="text-[10px] uppercase font-mono tracking-wider font-semibold text-indigo-600 dark:text-indigo-400">Report Status</span>
+                  <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">Digest Ready for Dispatch</p>
                 </div>
-                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
-                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> Formatted
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                  <CheckCircle2 className="h-3 w-3 text-emerald-600 dark:text-emerald-400" /> Ready
                 </span>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                <div className="bg-white p-3 rounded-lg border border-slate-150">
-                  <span className="text-[10px] text-slate-400 font-mono">Operations Count</span>
-                  <p className="text-sm font-bold text-slate-800">{activities.length} logged</p>
+                <div className="bg-white dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800">
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">Logged Operations</span>
+                  <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{activities.length} recorded</p>
                 </div>
-                <div className="bg-white p-3 rounded-lg border border-slate-150">
-                  <span className="text-[10px] text-slate-400 font-mono">Format</span>
-                  <p className="text-sm font-bold text-slate-800">Responsive HTML Email</p>
+                <div className="bg-white dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800">
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">Delivery Format</span>
+                  <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">HTML via Gmail API</p>
                 </div>
               </div>
 
-              <div className="bg-white p-3 rounded-lg border border-slate-150 space-y-2">
+              <div className="bg-white dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-800 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-800">Included Operations Summary</span>
-                  <span className="text-[10px] text-slate-400 font-mono">Latest {Math.min(activities.length, 5)} events</span>
+                  <span className="text-xs font-medium text-slate-800 dark:text-slate-200">Included Operations</span>
+                  <span className="text-[10px] text-slate-400 font-mono">Latest {Math.min(activities.length, 5)}</span>
                 </div>
-                <ul className="divide-y divide-slate-100 text-xs text-slate-600">
+                <ul className="divide-y divide-slate-100 dark:divide-slate-800 text-xs text-slate-600 dark:text-slate-300">
                   {activities.slice(0, 5).map((act, i) => (
-                    <li key={act.id || i} className="py-1.5 flex items-center justify-between gap-2">
-                      <span className="truncate text-[11px] text-slate-700">{act.message}</span>
-                      <span className="text-[10px] font-mono text-slate-400 shrink-0">{act.timestamp.split(" ")[1] || act.timestamp}</span>
+                    <li key={`act-summary-${act.id}-${i}`} className="py-1.5 flex items-center justify-between gap-2">
+                      <span className="truncate text-[11px] text-slate-700 dark:text-slate-300">{act.message}</span>
+                      <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 shrink-0">{act.timestamp.split(" ")[1] || act.timestamp}</span>
                     </li>
                   ))}
                   {activities.length === 0 && (
@@ -607,33 +764,28 @@ export default function TaskManager({
                   )}
                 </ul>
               </div>
-
-              <p className="text-[11px] text-slate-500 bg-indigo-50/60 p-2.5 rounded-lg border border-indigo-100/60 leading-relaxed">
-                The full executive email layout has been generated and will be sent directly to your connected Google account inbox via the Gmail API.
-              </p>
             </div>
 
             {/* Footer controls */}
-            <div className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-150">
-              <span className="text-[10px] text-slate-450 text-slate-400 font-mono leading-snug">
-                Send to connected account: <br />
-                <strong className="text-slate-700">{userEmail}</strong>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                Recipient: <strong className="text-slate-800 dark:text-slate-200 font-medium">{userEmail}</strong>
               </span>
 
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowReportPreview(false)}
-                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
                 >
-                  Edit Configuration
+                  Cancel
                 </button>
                 <button
                   id="btn-send-email-confirm"
                   onClick={handleSendEmailReportNow}
                   disabled={isSendingMail}
-                  className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 transition disabled:opacity-50"
+                  className="rounded-lg bg-emerald-600 dark:bg-emerald-500 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 dark:hover:bg-emerald-600 transition disabled:opacity-50 cursor-pointer shadow-xs"
                 >
-                  {isSendingMail ? "Processing..." : "Deliver Report"}
+                  {isSendingMail ? "Sending..." : "Send Report"}
                 </button>
               </div>
             </div>

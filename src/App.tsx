@@ -1,24 +1,31 @@
 import React, { useState, useEffect } from "react";
 import { User } from "firebase/auth";
 import { 
-  initAuth, googleSignIn, logout, listDriveFiles 
+  initAuth, googleSignIn, logout, listDriveFiles, isPopupDismissedError, uploadDriveBlob,
+  createDriveFolder, updateDriveTextFile, getDriveTextFileContent, moveDriveFile, sendGmailReport
 } from "./lib/googleApi";
-import { DriveFile, BackupJob, BackupLog, ActivityLog } from "./types";
+import { DriveFile, BackupJob, BackupLog, ActivityLog, SmartTaskReminder, EmailApprovalRequest } from "./types";
 import Header from "./components/Header";
 import DriveBrowser from "./components/DriveBrowser";
 import SmartOrganizer from "./components/SmartOrganizer";
 import BackupManager from "./components/BackupManager";
 import TaskManager from "./components/TaskManager";
 import Dashboard from "./components/Dashboard";
-import ImageGenerator from "./components/ImageGenerator";
 import GeminiChatbot from "./components/GeminiChatbot";
+import SheetsManager from "./components/SheetsManager";
 import Onboarding from "./components/Onboarding";
 import InfoTooltip from "./components/InfoTooltip";
+import NeuralSynapseCanvas from "./components/NeuralSynapseCanvas";
+import SetReminderModal from "./components/SetReminderModal";
+import EmailApprovalModal from "./components/EmailApprovalModal";
+import { AuthTransitionPortal, AuthPortalPhase } from "./components/AuthTransitionPortal";
+import { evaluateFilesBatch } from "./lib/decisionEngine";
+import { motion, AnimatePresence } from "framer-motion";
 import { 
   Sparkles, ShieldAlert, Layers, Bell, CheckSquare, HardDrive, Cpu, 
   Settings, FolderKanban, Info, AlertTriangle, ArrowRight, RefreshCw,
-  Clock, Laptop, ListTodo, Activity, LogOut, BarChart3, Image as ImageIcon, Sun, Moon,
-  Bot, Search, X, Download, FileCode, Check
+  Clock, Laptop, ListTodo, Activity, LogOut, BarChart3, Sun, Moon,
+  Bot, Search, X, Download, FileCode, Check, FileSpreadsheet, Folder
 } from "lucide-react";
 
 export default function App() {
@@ -50,6 +57,8 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [authPhase, setAuthPhase] = useState<AuthPortalPhase>("idle");
 
   // File states loaded from google drive API with localized safety simulation fallbacks
   const [files, setFiles] = useState<DriveFile[]>([]);
@@ -81,15 +90,58 @@ export default function App() {
 
   // Active navigation tab
   const [activeTab, setActiveTab] = useState<string>("drive");
+  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
 
-  // Lifted reminders state
-  const [reminders, setReminders] = useState<{ id: string; title: string; triggerTime: string; status: 'active' | 'fired'; notified: boolean }[]>([
-    { id: "1", title: "Daily Drive Cloud Backup Check", triggerTime: "09:00", status: "active", notified: false },
-    { id: "2", title: "Gemini Auto-Organisation sweep", triggerTime: "17:00", status: "active", notified: false }
+  // Lifted smart reminders state
+  const [reminders, setReminders] = useState<SmartTaskReminder[]>([
+    { 
+      id: "rem_1", 
+      title: "Daily Drive Cloud Backup Check", 
+      description: "Verify automated backup jobs and cloud sync integrity.",
+      actionType: "reminder_only",
+      triggerDate: new Date().toISOString().slice(0, 10),
+      triggerTime: "09:00", 
+      recurrence: "daily",
+      notifyInApp: true,
+      notifyEmail: false,
+      status: "active", 
+      notified: false,
+      executed: false,
+      createdAt: new Date().toISOString()
+    },
+    { 
+      id: "rem_2", 
+      title: "Quarterly Invoices Folder Sweep", 
+      description: "Ensure Q2 and Q3 invoice receipts are archived.",
+      actionType: "create_folder",
+      actionPayload: { folderName: "Invoices_2026_Archived" },
+      triggerDate: new Date().toISOString().slice(0, 10),
+      triggerTime: "17:00", 
+      recurrence: "monthly",
+      notifyInApp: true,
+      notifyEmail: true,
+      status: "active", 
+      notified: false,
+      executed: false,
+      createdAt: new Date().toISOString()
+    }
   ]);
+
+  // Modal and Approval states
+  const [isScheduleReminderModalOpen, setIsScheduleReminderModalOpen] = useState(false);
+  const [scheduleReminderFile, setScheduleReminderFile] = useState<DriveFile | null>(null);
+  const [pendingEmailApproval, setPendingEmailApproval] = useState<EmailApprovalRequest | null>(null);
+  const [isSendingApprovedEmail, setIsSendingApprovedEmail] = useState(false);
 
   // Injected Smart classification results from Gemini organization core
   const [filesInPlan, setFilesInPlan] = useState<{ [key: string]: { category: string; tags: string[]; relevance: number } }>({});
+
+  // Generative Neural Topology view toggle
+  const [showNeuralTopology, setShowNeuralTopology] = useState<boolean>(true);
+
+  // Chatbot external trigger synchronization
+  const [chatClearTrigger, setChatClearTrigger] = useState(0);
+  const [chatExportTrigger, setChatExportTrigger] = useState(0);
 
   // Central Log engine for user accomplishments
   const [activities, setActivities] = useState<ActivityLog[]>([
@@ -116,36 +168,81 @@ export default function App() {
 
   const [backupHistory, setBackupHistory] = useState<BackupLog[]>([]);
 
-  // Safety local fallbacks so that if the user's drive is blank or has narrow permission,
-  // the app is still extremely fun, descriptive, and interactive.
+  // Autonomous Decision System: Pre-evaluate fallbacks so zero files remain Unsorted
   const loadFallbackFiles = () => {
-    const fallbacks: DriveFile[] = [
+    const rawFallbacks: DriveFile[] = [
       { id: "fb_f1", name: "Work Receipts", mimeType: "application/vnd.google-apps.folder", parents: [] },
       { id: "fb_f2", name: "Family Archives", mimeType: "application/vnd.google-apps.folder", parents: [] },
       { id: "fb_d1", name: "project_requirements.txt", mimeType: "text/plain", size: "12.5 KB", parents: [], webViewLink: "#" },
       { id: "fb_d2", name: "monthly_invoice_may_2026.txt", mimeType: "text/plain", size: "4.1 KB", parents: ["fb_f1"], webViewLink: "#" },
-      { id: "fb_d3", name: "vacation_itinerary.txt", mimeType: "text/plain", size: "2.3 KB", parents: ["fb_f2"], webViewLink: "#" }
+      { id: "fb_d3", name: "vacation_itinerary.txt", mimeType: "text/plain", size: "2.3 KB", parents: ["fb_f2"], webViewLink: "#" },
+      { id: "fb_d4", name: "consulting_agreement_2026.pdf", mimeType: "application/pdf", size: "114 KB", parents: [], webViewLink: "#" },
+      { id: "fb_d5", name: "q2_revenue_forecast.csv", mimeType: "text/csv", size: "38.2 KB", parents: [], webViewLink: "#" },
+      { id: "fb_d6", name: "cloud_architecture_spec.md", mimeType: "text/markdown", size: "24.6 KB", parents: [], webViewLink: "#" },
+      { id: "fb_d7", name: "brand_logo_master.svg", mimeType: "image/svg+xml", size: "18.4 KB", parents: [], webViewLink: "#" },
+      { id: "fb_d8", name: "legacy_backup_dump_2021.zip", mimeType: "application/zip", size: "14.2 MB", parents: [], webViewLink: "#" }
     ];
-    setFiles(fallbacks);
+    const classified = evaluateFilesBatch(rawFallbacks);
+    setFiles(classified);
+
+    const seedPlan: { [key: string]: { category: string; tags: string[]; relevance: number } } = {};
+    classified.forEach(f => {
+      if (f.category) {
+        seedPlan[f.id] = {
+          category: f.category,
+          tags: f.tags || [],
+          relevance: f.relevance || 75
+        };
+      }
+    });
+    setFilesInPlan(prev => ({ ...seedPlan, ...prev }));
   };
 
-  // Perform OAuth sign-in flow
+  // Perform OAuth sign-in flow with futuristic dual-phase transitions
   const handleLogin = async () => {
+    if (isLoggingIn) return;
     setIsLoggingIn(true);
+    setAuthNotice(null);
+    setAuthPhase("initiating");
+
     try {
       const result = await googleSignIn();
       if (result) {
         setToken(result.accessToken);
         setUser(result.user);
-        setNeedsAuth(false);
         addLog("email", `User authenticated securely: ${result.user.email}`);
-        await loadDriveContents(result.accessToken);
+        
+        // Concurrently preload Drive contents while synthesis portal runs
+        loadDriveContents(result.accessToken);
+
+        // Transition seamlessly to the futuristic Workspace Synthesis phase
+        setAuthPhase("synthesizing");
+      } else {
+        setAuthPhase("idle");
+        setAuthNotice("Sign-in window was closed before completion. Click below when you are ready to connect.");
       }
-    } catch (err) {
+    } catch (err: any) {
+      setAuthPhase("idle");
+      if (isPopupDismissedError(err)) {
+        setAuthNotice("Sign-in window was closed before completion. Click below when you are ready to connect.");
+        return;
+      }
       console.error("Authentication Error:", err);
+      setAuthNotice("Authentication was interrupted. Please try clicking again.");
     } finally {
       setIsLoggingIn(false);
     }
+  };
+
+  const handleAuthTransitionComplete = () => {
+    setNeedsAuth(false);
+    setAuthPhase("idle");
+  };
+
+  const handleAuthCancel = () => {
+    setAuthPhase("idle");
+    setIsLoggingIn(false);
+    setAuthNotice("Authentication handshake was cancelled. Click below to reconnect.");
   };
 
   // Perform OAuth logout flow
@@ -174,7 +271,22 @@ export default function App() {
         return true;
       });
       if (uniqueItems.length > 0) {
-        setFiles(uniqueItems);
+        // Run full autonomous Decision Engine across live Drive items
+        const classified = evaluateFilesBatch(uniqueItems);
+        setFiles(classified);
+
+        // Pre-populate decision plan mapping for seamless cross-component sync
+        const seedPlan: { [key: string]: { category: string; tags: string[]; relevance: number } } = {};
+        classified.forEach(f => {
+          if (f.category) {
+            seedPlan[f.id] = {
+              category: f.category,
+              tags: f.tags || [],
+              relevance: f.relevance || 75
+            };
+          }
+        });
+        setFilesInPlan(prev => ({ ...seedPlan, ...prev }));
       } else {
         loadFallbackFiles();
       }
@@ -207,6 +319,163 @@ export default function App() {
       details
     };
     setActivities(prev => [item, ...prev]);
+  };
+
+  // Dynamically compute whether the active workspace view is currently empty based on data length
+  const isCurrentViewEmpty = React.useMemo(() => {
+    switch (activeTab) {
+      case "drive":
+        return files.length === 0;
+      case "sheets":
+        return files.filter(f => 
+          f.mimeType?.includes("spreadsheet") || 
+          f.mimeType?.includes("csv") || 
+          f.name?.endsWith(".csv") || 
+          f.name?.endsWith(".xlsx") || 
+          f.name?.endsWith(".sheet")
+        ).length === 0;
+      case "organizer":
+        return files.length === 0;
+      case "backup":
+        return backupJobs.length === 0;
+      case "tasks":
+        return reminders.length === 0;
+      case "reports":
+        return activities.length === 0;
+      case "chat":
+        return false;
+      default:
+        return false;
+    }
+  }, [activeTab, files, backupJobs, reminders, activities]);
+
+  // Central dispatcher for contextual actions triggered from the workspace Header
+  const handleHeaderActionSelect = (actionId: string) => {
+    switch (actionId) {
+      case "upload-file": {
+        const fileInput = document.getElementById("drive-browser-file-input") as HTMLInputElement | null;
+        if (fileInput) {
+          fileInput.click();
+        } else {
+          setActiveTab("drive");
+          setTimeout(() => {
+            const el = document.getElementById("drive-browser-file-input") as HTMLInputElement | null;
+            if (el) el.click();
+          }, 150);
+        }
+        break;
+      }
+      case "new-doc": {
+        setActiveTab("drive");
+        window.open("https://docs.google.com/document/create", "_blank");
+        break;
+      }
+      case "new-sheet": {
+        setActiveTab("sheets");
+        window.open("https://sheets.google.com/create", "_blank");
+        break;
+      }
+      case "new-folder": {
+        setActiveTab("drive");
+        const folderBtn = document.getElementById("btn-new-folder");
+        if (folderBtn) {
+          folderBtn.click();
+        }
+        break;
+      }
+      case "keyword-rules":
+      case "plan-structure":
+      case "catalogue-drive":
+      case "organize-all": {
+        setActiveTab("organizer");
+        break;
+      }
+      case "new-backup-job":
+      case "run-all-backups": {
+        setActiveTab("backup");
+        break;
+      }
+      case "new-task":
+      case "send-report":
+      case "sync-tasks": {
+        setActiveTab("tasks");
+        break;
+      }
+      case "schedule-reminder": {
+        handleOpenScheduleModal();
+        break;
+      }
+      case "export-csv": {
+        const csvContent = "data:text/csv;charset=utf-8," + 
+          ["Name,Size,Type,Created", ...files.map(f => `"${(f.name || '').replace(/"/g, '""')}","${f.size || 'N/A'}","${f.mimeType || 'file'}","${f.createdTime || ''}"`)].join("\n");
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", `drive_export_${new Date().toISOString().slice(0, 10)}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        addLog("create", "Exported Drive inventory to CSV.");
+        break;
+      }
+      case "export-json": {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(files, null, 2));
+        const link = document.createElement("a");
+        link.setAttribute("href", dataStr);
+        link.setAttribute("download", `drive_export_${new Date().toISOString().slice(0, 10)}.json`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        addLog("create", "Exported Drive files metadata to JSON.");
+        break;
+      }
+      case "generate-ideas": {
+        setActiveTab("chat");
+        window.dispatchEvent(new CustomEvent("drive-organizer:generate-ideas"));
+        addLog("create", "Generated contextual AI chat prompt suggestions.");
+        break;
+      }
+      case "clear-chat": {
+        setActiveTab("chat");
+        setChatClearTrigger(prev => prev + 1);
+        window.dispatchEvent(new CustomEvent("drive-organizer:clear-chat"));
+        addLog("modify", "Cleared AI conversation history.");
+        break;
+      }
+      case "export-chat": {
+        setActiveTab("chat");
+        setChatExportTrigger(prev => prev + 1);
+        window.dispatchEvent(new CustomEvent("drive-organizer:export-chat"));
+        addLog("create", "Exported AI chat transcript.");
+        break;
+      }
+      default:
+        console.log(`Header contextual action selected: ${actionId}`);
+    }
+  };
+
+  // Global file drop handler for workspace Header
+  const handleHeaderFileDrop = async (droppedFiles: FileList) => {
+    if (!token) {
+      addLog("email", "Please connect to Google Drive before dropping files to upload.");
+      return;
+    }
+    setIsSyncing(true);
+    let count = 0;
+    try {
+      for (let i = 0; i < droppedFiles.length; i++) {
+        const file = droppedFiles[i];
+        await uploadDriveBlob(token, file);
+        count++;
+      }
+      addLog("create", `Uploaded ${count} file(s) via Contextual Toolbar.`);
+      await loadDriveContents(token);
+    } catch (err: any) {
+      console.error("Header file drop upload error:", err);
+      addLog("create", `Upload failed: ${err.message || 'Network error'}`);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   // Export status feedback for System Action Logging
@@ -261,9 +530,23 @@ export default function App() {
     }, 2500);
   };
 
-  // Fire Visual Notifications & sound chimes
+  // Helper to sanitize HTML for human email approval previews
+  function escapeHtml(str: string): string {
+    return (str || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  // Fire Visual Notifications & sound chimes with auto-dismiss
   const triggerNotification = (title: string, message: string) => {
     setActiveAlert({ title, message });
+
+    setTimeout(() => {
+      setActiveAlert(prev => prev && prev.title === title ? null : prev);
+    }, 6000);
 
     // Try play simple system beep
     try {
@@ -281,6 +564,209 @@ export default function App() {
       // AudioContext sandbox errors are bypassed safely
     }
   };
+
+  const handleOpenScheduleModal = (file?: DriveFile) => {
+    setScheduleReminderFile(file || null);
+    setIsScheduleReminderModalOpen(true);
+  };
+
+  const handleSaveReminder = (newReminder: SmartTaskReminder) => {
+    setReminders(prev => [newReminder, ...prev]);
+    addLog(
+      "task",
+      `Scheduled smart reminder: "${newReminder.title}"`,
+      `Scheduled: ${newReminder.triggerDate} ${newReminder.triggerTime} (${newReminder.recurrence})`
+    );
+    if (newReminder.notifyInApp) {
+      triggerNotification("Reminder Scheduled", `"${newReminder.title}" scheduled for ${newReminder.triggerDate} at ${newReminder.triggerTime}`);
+    }
+  };
+
+  const handleExecuteReminderAction = async (reminder: SmartTaskReminder) => {
+    try {
+      if (reminder.actionType === "create_folder") {
+        const folderName = reminder.actionPayload?.folderName || "Scheduled Folder";
+        if (token) {
+          await createDriveFolder(token, folderName, reminder.actionPayload?.parentFolderId || "root");
+          await loadDriveContents(token);
+        }
+        addLog("create", `Automated action executed: Created Drive folder "${folderName}"`, `Reminder: ${reminder.title}`);
+      } else if (reminder.actionType === "edit_doc") {
+        if (token && reminder.targetFileId && reminder.actionPayload?.appendContent) {
+          const currentText = await getDriveTextFileContent(token, reminder.targetFileId);
+          const updateStamp = `\n\n[Automated Task Update ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}]:\n${reminder.actionPayload.appendContent}`;
+          await updateDriveTextFile(token, reminder.targetFileId, currentText + updateStamp);
+          await loadDriveContents(token);
+        }
+        addLog("modify", `Automated action executed: Appended text note to "${reminder.targetFileName || 'document'}"`, `Reminder: ${reminder.title}`);
+      } else if (reminder.actionType === "relocate_file") {
+        if (token && reminder.targetFileId && reminder.actionPayload?.targetDestinationFolderId) {
+          await moveDriveFile(token, reminder.targetFileId, reminder.actionPayload.targetDestinationFolderId);
+          await loadDriveContents(token);
+        }
+        addLog("move", `Automated action executed: Relocated "${reminder.targetFileName || 'file'}" to target folder`, `Reminder: ${reminder.title}`);
+      }
+
+      if (reminder.notifyInApp) {
+        triggerNotification(`Scheduled Action Completed`, `"${reminder.title}" executed successfully.`);
+      }
+
+      // Check if email notification was requested: MANDATORY Human Approval Check
+      if (reminder.notifyEmail) {
+        const approvalReq: EmailApprovalRequest = {
+          id: "email_appr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+          reminderId: reminder.id,
+          recipientEmail: user?.email || "Steven.lees.production@gmail.com",
+          subject: `[Drive Organizer] Scheduled Action Completed: ${reminder.title}`,
+          triggerReason: `Scheduled task executed (${reminder.actionType}) on ${new Date().toLocaleDateString()}`,
+          htmlBody: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
+            <h2 style="color: #4f46e5; margin-top: 0; font-size: 18px;">Automated Action Completed</h2>
+            <p style="font-size: 14px; color: #334155; margin-bottom: 12px;"><strong>Task:</strong> ${escapeHtml(reminder.title)}</p>
+            ${reminder.description ? `<p style="font-size: 13px; color: #64748b;">${escapeHtml(reminder.description)}</p>` : ''}
+            <div style="background: #f8fafc; border-radius: 8px; padding: 12px; margin: 16px 0; border: 1px solid #e2e8f0;">
+              <p style="margin: 0; font-size: 12px; color: #475569;"><strong>Action Type:</strong> ${escapeHtml(reminder.actionType)}</p>
+              ${reminder.targetFileName ? `<p style="margin: 4px 0 0 0; font-size: 12px; color: #475569;"><strong>Target:</strong> ${escapeHtml(reminder.targetFileName)}</p>` : ''}
+              <p style="margin: 4px 0 0 0; font-size: 12px; color: #059669;"><strong>Status:</strong> Successfully Executed</p>
+            </div>
+            <p style="font-size: 11px; color: #94a3b8; margin-top: 20px;">Sent via Google Workspace API · Human approval required before delivery</p>
+          </div>`,
+          timestamp: new Date().toISOString()
+        };
+        setPendingEmailApproval(approvalReq);
+        triggerNotification("Email Approval Required", `Approval requested to deliver completion notification for "${reminder.title}".`);
+        addLog("email", `Email notification awaiting human approval for: "${reminder.title}"`);
+      }
+
+      setReminders(prev => prev.map(r => r.id === reminder.id ? { ...r, executed: true, status: 'completed' } : r));
+    } catch (err: any) {
+      console.error("Scheduled action execution error:", err);
+      addLog("modify", `Failed to execute action for "${reminder.title}": ${err.message || 'Error'}`);
+      triggerNotification("Action Failed", `Could not complete scheduled action: ${err.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleApproveEmail = async (req: EmailApprovalRequest) => {
+    if (!token) {
+      triggerNotification("Cannot Send Email", "Please connect your Google Workspace account.");
+      return;
+    }
+    setIsSendingApprovedEmail(true);
+    try {
+      await sendGmailReport(token, req.recipientEmail, req.subject, req.htmlBody);
+      addLog("email", `Human approved email delivered to ${req.recipientEmail}`, `Subject: ${req.subject}`);
+      triggerNotification("Email Delivered", `Successfully sent to ${req.recipientEmail}`);
+      setPendingEmailApproval(null);
+    } catch (err: any) {
+      console.error("Failed to send approved email:", err);
+      addLog("email", `Failed to send email: ${err.message || 'Error'}`);
+      triggerNotification("Email Send Failed", err.message || "Failed to dispatch email");
+    } finally {
+      setIsSendingApprovedEmail(false);
+    }
+  };
+
+  const handleDeclineEmail = (req: EmailApprovalRequest) => {
+    addLog("email", `Email delivery declined by user: "${req.subject}"`, "Notification kept in-app only.");
+    triggerNotification("Email Delivery Cancelled", "The notification was kept in-app only.");
+    setPendingEmailApproval(null);
+  };
+
+  // Background Smart Reminder & Scheduled Action Evaluation Engine
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const now = new Date();
+      const currentDateStr = now.toISOString().slice(0, 10);
+      const currentHourMin = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+      setReminders(prev => {
+        let hasChanges = false;
+        const updated = prev.map(rem => {
+          // Check if due: matches today's date (or earlier overdue date) and time
+          const isDateDue = !rem.triggerDate || rem.triggerDate <= currentDateStr;
+          const isTimeDue = rem.triggerTime === currentHourMin || (rem.triggerDate ? rem.triggerDate < currentDateStr : false);
+
+          if (rem.status === 'active' && !rem.notified && isDateDue && isTimeDue) {
+            hasChanges = true;
+
+            // 1. In-App notification
+            if (rem.notifyInApp) {
+              triggerNotification(`Scheduled Task Due: ${rem.title}`, rem.description || `Scheduled alert triggered at ${rem.triggerTime}`);
+              addLog("task", `Automated reminder alarm fired: "${rem.title}"`, `Trigger Time: ${rem.triggerTime}`);
+            }
+
+            // 2. Automated Action execution (if scheduled)
+            if (rem.actionType && rem.actionType !== 'reminder_only' && !rem.executed) {
+              handleExecuteReminderAction(rem);
+            } else if (rem.notifyEmail) {
+              // 3. MANDATORY HUMAN APPROVAL ENFORCEMENT BEFORE SENDING ANY EMAIL
+              const approvalReq: EmailApprovalRequest = {
+                id: "email_appr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+                reminderId: rem.id,
+                recipientEmail: user?.email || "Steven.lees.production@gmail.com",
+                subject: `[Drive Organizer] Reminder Due: ${rem.title}`,
+                triggerReason: `Scheduled Reminder reached at ${rem.triggerTime} (${rem.recurrence})`,
+                htmlBody: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #1e293b; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
+                  <h2 style="color: #4f46e5; margin-top: 0; font-size: 18px;">Smart Task Reminder: ${escapeHtml(rem.title)}</h2>
+                  <p style="font-size: 13px; color: #64748b; margin-bottom: 16px;">This automated notification was scheduled in your Drive Organizer workspace.</p>
+                  ${rem.description ? `<p style="font-size: 14px; color: #334155; background: #f8fafc; padding: 12px; border-radius: 8px; border-left: 3px solid #6366f1;">${escapeHtml(rem.description)}</p>` : ''}
+                  ${rem.targetFileName ? `<p style="font-size: 13px; color: #475569;"><strong>Linked Item:</strong> ${escapeHtml(rem.targetFileName)}</p>` : ''}
+                  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+                  <p style="font-size: 11px; color: #94a3b8;">Sent via Google Workspace API · Human approval required before delivery</p>
+                </div>`,
+                timestamp: new Date().toISOString()
+              };
+              setPendingEmailApproval(approvalReq);
+              triggerNotification("Email Approval Required", `Approval requested before sending email for: "${rem.title}".`);
+              addLog("email", `Email notification awaiting human approval for: "${rem.title}"`);
+            }
+
+            // 4. Advance recurrence
+            if (rem.recurrence === 'daily') {
+              const nextD = new Date(now.getTime() + 86400000);
+              return {
+                ...rem,
+                triggerDate: nextD.toISOString().slice(0, 10),
+                notified: false,
+                executed: false,
+                lastFiredAt: now.toISOString()
+              };
+            } else if (rem.recurrence === 'weekly') {
+              const nextD = new Date(now.getTime() + 7 * 86400000);
+              return {
+                ...rem,
+                triggerDate: nextD.toISOString().slice(0, 10),
+                notified: false,
+                executed: false,
+                lastFiredAt: now.toISOString()
+              };
+            } else if (rem.recurrence === 'monthly') {
+              const nextD = new Date(now);
+              nextD.setMonth(nextD.getMonth() + 1);
+              return {
+                ...rem,
+                triggerDate: nextD.toISOString().slice(0, 10),
+                notified: false,
+                executed: false,
+                lastFiredAt: now.toISOString()
+              };
+            } else {
+              return {
+                ...rem,
+                status: 'fired',
+                notified: true,
+                executed: true,
+                lastFiredAt: now.toISOString()
+              };
+            }
+          }
+          return rem;
+        });
+        return hasChanges ? updated : prev;
+      });
+    }, 10000);
+
+    return () => clearInterval(timer);
+  }, [token, user]);
 
   // Fire initial listener on mount
   useEffect(() => {
@@ -307,7 +793,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans selection:bg-indigo-500 selection:text-white antialiased">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white antialiased">
       {/* Onboarding Flow Overlay */}
       {!needsAuth && !hasSeenOnboarding && (
         <Onboarding onComplete={completeOnboarding} />
@@ -330,8 +816,21 @@ export default function App() {
             ✕
           </button>
         </div>
-      )}      {needsAuth ? (
-        <>
+      )}
+
+      {/* Futuristic AI Auth Transition Portal (Pre-Auth Gateway Handshake & Post-Auth Mesh Synthesis) */}
+      <AuthTransitionPortal 
+        phase={authPhase} 
+        user={user} 
+        onComplete={handleAuthTransitionComplete} 
+        onCancel={handleAuthCancel} 
+      />
+
+      {needsAuth ? (
+        <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#080d1a] text-slate-900 dark:text-slate-100 relative overflow-hidden">
+          {/* Ambient background glow */}
+          <div className="absolute inset-0 ambient-glow pointer-events-none"></div>
+
           <Header 
             user={user} 
             onLogout={handleLogout} 
@@ -343,35 +842,44 @@ export default function App() {
             isDarkMode={isDarkMode}
             toggleTheme={toggleTheme}
           />
-          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-            {/* AUTH SPLASH SCREEN: Style strictly matches gsi standards with aesthetic balance */}
-            <div className="py-16 md:py-24 max-w-xl mx-auto text-center space-y-8 animate-in fade-in slide-in-from-bottom-5 duration-300">
-              <div className="space-y-4">
-                {/* Premium Hero Circle */}
-                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-xl shadow-indigo-150 transform hover:rotate-12 transition duration-300">
-                  <Layers className="h-8 w-8" />
+          <main className="flex-1 flex items-center justify-center p-6 relative z-10">
+            <div className="w-full max-w-md glass-panel rounded-3xl p-8 sm:p-10 space-y-7 text-center shadow-xl ring-1 ring-slate-200/80 dark:ring-slate-800/80">
+              {/* Intelligent AI Hologram Icon Lockup */}
+              <div className="flex flex-col items-center gap-4">
+                <div className="relative flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-2xl bg-indigo-500/20 blur-xl"></div>
+                  <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 text-white shadow-lg ring-1 ring-white/30">
+                    <Layers className="h-7 w-7" />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <h1 className="font-display font-extrabold text-3xl sm:text-4xl tracking-tight text-slate-900">
-                    Drive Organiser Companion
+
+                <div className="space-y-1.5">
+                  <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display">
+                    Drive Organizer
                   </h1>
-                  <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
-                    Authenticate your workspace account securely to initialise smart cataloguing files, coordinate backings, and delegate calendar-synchronised Google Tasks.
+                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
+                    AI-native companion for autonomous filing, smart tagging, scheduled backups, and Google Workspace intelligence.
                   </p>
                 </div>
               </div>
 
-              {/* gsi Auth button assembly */}
-              <div className="flex flex-col items-center justify-center p-6 border border-slate-200 rounded-2xl bg-white shadow-sm/5 shadow-sm">
-                <span className="text-xs font-mono text-slate-400 mb-4 block">
-                  Single Sign-on Google Secure Verification
-                </span>
+              {/* Feature capability highlights with Zero-Pill unboxed typography */}
+              <div className="pt-1 pb-1 border-y border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-2 flex-wrap">
+                <span>Smart Categorization</span>
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+                <span>Scheduled Sync</span>
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+                <span>Google Sheets</span>
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+                <span>Gemini Assistant</span>
+              </div>
 
+              <div className="pt-1 flex flex-col items-center">
                 <button 
                   id="gsi-login-button"
                   onClick={handleLogin}
                   disabled={isLoggingIn}
-                  className="gsi-material-button hover:shadow-md transition active:scale-95 duration-155"
+                  className="gsi-material-button hover:shadow-md transition active:scale-98 cursor-pointer"
                 >
                   <div className="gsi-material-button-state"></div>
                   <div className="gsi-material-button-content-wrapper">
@@ -389,219 +897,218 @@ export default function App() {
                 </button>
                 
                 {isLoggingIn && (
-                  <div className="flex items-center gap-1.5 text-[10px] text-zinc-400 font-mono mt-4">
-                    <RefreshCw className="h-3 w-3 animate-spin text-indigo-650" /> Verifying certificate popup...
+                  <div className="flex items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-400 font-mono mt-3">
+                    <RefreshCw className="h-3 w-3 animate-spin" /> Authenticating Workspace session...
+                  </div>
+                )}
+
+                {authNotice && (
+                  <div className="rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 p-3 text-xs text-amber-800 dark:text-amber-300 mt-3 text-left">
+                    {authNotice}
                   </div>
                 )}
               </div>
 
-              {/* Core safety disclosures */}
-              <div className="rounded-xl bg-slate-100 p-4 border border-slate-150 inline-flex items-center gap-2 max-w-md text-left text-[11px] text-slate-500 leading-normal">
-                <Info className="h-5 w-5 text-indigo-500 shrink-0" />
-                <span>We adhere to secure credential authorization. OAuth tokens remain cached in active browser memory and are wiped instantly on session closure.</span>
-              </div>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 pt-3 border-t border-slate-100 dark:border-slate-800/80">
+                Direct client-side OAuth · Tokens remain in ephemeral memory · Zero remote file caching
+              </p>
             </div>
           </main>
-        </>
+        </div>
       ) : (
-        /* MAIN COMPLETED BENTO GRID INTERFACE */
-        <div className="flex-1 flex flex-col md:flex-row min-h-screen">
+        /* MAIN WORKSPACE INTERFACE */
+        <div className="flex-1 flex flex-col md:flex-row min-h-screen bg-slate-50 dark:bg-[#080d1a] text-slate-900 dark:text-slate-100 relative animate-warp-in">
           
-          {/* DESKTOP SIDE PANEL (Bento Side Bar) */}
-          <aside className="hidden md:flex w-68 bg-white border-r border-zinc-200 flex-col justify-between p-6 h-screen sticky top-0 shrink-0">
-            <div className="space-y-8">
+          {/* DESKTOP SIDEBAR */}
+          <aside className="hidden md:flex w-64 bg-white/90 dark:bg-slate-900/90 border-r border-slate-200/80 dark:border-slate-800/80 backdrop-blur-xl flex-col justify-between p-4 h-screen sticky top-0 shrink-0 z-30">
+            <div className="space-y-6">
               {/* Brand identity */}
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-md shadow-indigo-100">
-                  <Layers className="h-5.5 w-5.5" />
+              <div className="flex items-center gap-3 px-2 pt-1">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 text-white shadow-xs ring-1 ring-white/20 shrink-0">
+                  <Layers className="h-4.5 w-4.5" />
                 </div>
-                <div>
-                  <h1 className="font-display font-extrabold text-base tracking-tight text-zinc-900 leading-none">
-                    DriveArch
-                  </h1>
-                  <span className="text-[10.5px] font-mono text-zinc-400 block mt-1 hover:text-indigo-600 transition-colors">
-                    Intelligent Workspace v2.5
-                  </span>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-sm tracking-tight text-slate-900 dark:text-slate-100 font-display">
+                      Drive Organizer
+                    </span>
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Active"></span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono tracking-tight">
+                    Workspace Synapse v0.9.1
+                  </p>
                 </div>
               </div>
 
               {/* Navigation Actions */}
               <nav className="space-y-1">
                 <button
+                  id="nav-btn-drive"
                   onClick={() => setActiveTab("drive")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-xs transition-all cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
                     activeTab === "drive"
-                      ? "bg-indigo-50 text-indigo-700 font-semibold"
-                      : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
+                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <HardDrive className="h-4 w-4" />
+                    <HardDrive className={`h-4 w-4 ${activeTab === "drive" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
                     <span>Google Drive</span>
                   </div>
-                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${activeTab === "drive" ? "bg-indigo-200/50 text-indigo-800" : "bg-zinc-100 text-zinc-500"}`}>
+                  <span className={`text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md ${
+                    activeTab === "drive" ? "bg-indigo-100/80 text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-300" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                  }`}>
                     {files.length}
                   </span>
                 </button>
 
                 <button
-                  onClick={() => setActiveTab("organizer")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "organizer"
-                      ? "bg-indigo-50 text-indigo-700 font-semibold"
-                      : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
+                  id="sidebar-nav-sheets"
+                  onClick={() => setActiveTab("sheets")}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
+                    activeTab === "sheets"
+                      ? "bg-emerald-50/90 text-emerald-950 dark:bg-emerald-950/60 dark:text-emerald-200 font-semibold border-l-2 border-emerald-600 dark:border-emerald-400 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <Sparkles className="h-4 w-4" />
-                    <span>Smart Organiser</span>
+                    <FileSpreadsheet className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                    <span>Google Sheets</span>
+                  </div>
+                  <span className={`text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md ${
+                    activeTab === "sheets" ? "bg-emerald-100/80 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                  }`}>
+                    {files.filter(f => f.mimeType === "application/vnd.google-apps.spreadsheet" || f.name.endsWith(".csv")).length}
+                  </span>
+                </button>
+
+                <button
+                  id="sidebar-nav-organizer"
+                  onClick={() => setActiveTab("organizer")}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
+                    activeTab === "organizer"
+                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <FolderKanban className={`h-4 w-4 ${activeTab === "organizer" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
+                    <span>Smart Organizer</span>
                   </div>
                   {Object.keys(filesInPlan).length > 0 && (
-                    <span className="h-2 w-2 rounded-full bg-indigo-600"></span>
+                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400 animate-pulse"></span>
                   )}
                 </button>
 
                 <button
+                  id="sidebar-nav-backup"
                   onClick={() => setActiveTab("backup")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-xs transition-all cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
                     activeTab === "backup"
-                      ? "bg-indigo-50 text-indigo-700 font-semibold"
-                      : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
+                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`} />
+                    <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin text-indigo-500' : ''}`} />
                     <span>Cloud Backups</span>
                   </div>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-100 text-zinc-500">
+                  <span className={`text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md ${
+                    activeTab === "backup" ? "bg-indigo-100/80 text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-300" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                  }`}>
                     {backupJobs.length}
                   </span>
                 </button>
 
                 <button
+                  id="sidebar-nav-tasks"
                   onClick={() => setActiveTab("tasks")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-xs transition-all cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
                     activeTab === "tasks"
-                      ? "bg-indigo-50 text-indigo-700 font-semibold"
-                      : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
+                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                     <ListTodo className="h-4 w-4" />
+                    <ListTodo className={`h-4 w-4 ${activeTab === "tasks" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
                     <span>Google Tasks</span>
                   </div>
                   {reminders.filter(r => r.status === 'active').length > 0 && (
-                    <span className="text-[9px] font-mono bg-indigo-600 font-bold text-white px-1.5 py-0.2 rounded-full">
+                    <span className="text-[10px] font-mono tabular-nums font-semibold px-1.5 py-0.5 rounded-full bg-indigo-600 text-white">
                       {reminders.filter(r => r.status === 'active').length}
                     </span>
                   )}
                 </button>
 
                 <button
+                  id="sidebar-nav-reports"
                   onClick={() => setActiveTab("reports")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-xs transition-all cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
                     activeTab === "reports"
-                      ? "bg-indigo-50 text-indigo-700 font-semibold"
-                      : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
+                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <BarChart3 className="h-4 w-4" />
+                    <BarChart3 className={`h-4 w-4 ${activeTab === "reports" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
                     <span>Reports</span>
                   </div>
                 </button>
 
                 <button
-                  onClick={() => setActiveTab("image_gen")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "image_gen"
-                      ? "bg-indigo-50 text-indigo-700 font-semibold"
-                      : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <ImageIcon className="h-4 w-4" />
-                    <span>Image Generator</span>
-                  </div>
-                </button>
-
-                <button
+                  id="sidebar-nav-chat"
                   onClick={() => setActiveTab("chat")}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl font-medium text-xs transition-all cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
                     activeTab === "chat"
-                      ? "bg-indigo-50 text-indigo-700 font-semibold"
-                      : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
+                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
+                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
                   }`}
                 >
                   <div className="flex items-center gap-2.5">
-                    <Bot className="h-4 w-4 text-indigo-600" />
-                    <span>Gemini Chatbot</span>
+                    <Bot className={`h-4 w-4 ${activeTab === "chat" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
+                    <span>Gemini Assistant</span>
                   </div>
-                  <span className="text-[9px] font-mono bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-semibold">
-                    Multi-Turn
-                  </span>
                 </button>
               </nav>
-
-              {/* Status Indicator Bento */}
-              <div className="rounded-2xl bg-zinc-50 border border-zinc-150 p-4 space-y-3 font-mono text-[10px] text-zinc-500 select-none">
-                <span className="font-semibold text-zinc-800 uppercase tracking-widest block text-[9px] border-b border-zinc-200 pb-1.5">
-                  Node Engine telemetry
-                </span>
-                <div className="flex justify-between items-center">
-                  <span>Network core:</span>
-                  <span className="text-emerald-600 font-bold flex items-center gap-1">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span> ONLINE
-                  </span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span>Simulated nodes:</span>
-                  <span>3 Active Devices</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span>Integrity check:</span>
-                  <span className="text-zinc-700">98.4% Passed</span>
-                </div>
-              </div>
             </div>
 
-            {/* Profile Info Card */}
-            <div className="border-t border-zinc-150 pt-4 flex flex-col gap-3">
-              <div className="flex items-center gap-3">
+            {/* Profile and Logout Section */}
+            <div className="border-t border-slate-200/80 dark:border-slate-800/80 pt-3 flex flex-col gap-2.5">
+              <div className="flex items-center gap-2.5 px-1">
                 {user?.photoURL ? (
                   <img
                     src={user.photoURL}
                     referrerPolicy="no-referrer"
                     alt={user.displayName || "Avatar"}
-                    className="h-9 w-9 rounded-full border border-indigo-200 shadow-sm"
+                    className="h-8 w-8 rounded-full border border-slate-200 dark:border-slate-700 shrink-0"
                   />
                 ) : (
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-50 text-indigo-700 font-bold text-xs ring-1 ring-indigo-150">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white font-semibold text-xs shrink-0 shadow-xs">
                     {user?.displayName?.charAt(0) || "U"}
                   </div>
                 )}
                 <div className="min-w-0 flex-1">
-                  <h4 className="text-xs font-semibold text-zinc-900 truncate">
-                    {user?.displayName || "Drive Admin User"}
-                  </h4>
-                  <p className="text-[10px] text-zinc-400 font-mono truncate">
+                  <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
+                    {user?.displayName || "Connected User"}
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 font-mono truncate">
                     {user?.email}
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 pt-1">
                 <button
                   onClick={toggleTheme}
-                  title="Toggle Light/Dark Mode"
-                  className="flex-shrink-0 flex items-center justify-center p-2 rounded-lg text-slate-500 bg-slate-50/50 hover:bg-slate-100 transition-colors border border-slate-100 cursor-pointer"
+                  title="Toggle Theme"
+                  className="flex items-center justify-center p-2 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800 transition-colors cursor-pointer"
                 >
                   {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                 </button>
                 <button
                   id="sidebar-logout-btn"
                   onClick={handleLogout}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold text-rose-500 bg-rose-50/50 hover:bg-rose-50 transition-colors border border-rose-100 cursor-pointer"
+                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
                 >
                   <LogOut className="h-3.5 w-3.5" />
                   <span>Disconnect</span>
@@ -610,10 +1117,9 @@ export default function App() {
             </div>
           </aside>
 
-          {/* RIGHT VIEWWORKSPACE VIEW (Content Area and Auxiliary Cards) */}
+          {/* MAIN CONTENT AREA */}
           <div className="flex-1 flex flex-col min-w-0">
-            
-            {/* MOBILE HEADER COMPATIBILITY ROW */}
+            {/* WORKSPACE HEADER WITH INTEGRATED CONTEXTUAL ACTION TOOLBAR */}
             <Header 
               user={user} 
               onLogout={handleLogout} 
@@ -624,135 +1130,130 @@ export default function App() {
               isSyncing={isSyncing}
               isDarkMode={isDarkMode}
               toggleTheme={toggleTheme}
+              isEmptyState={isCurrentViewEmpty}
+              onActionSelect={handleHeaderActionSelect}
+              onFileDrop={handleHeaderFileDrop}
             />
 
-            {/* INTEGRATED FULL BENTO DASHBOARD WRAPPER */}
-            <main id="main-dashboard-scroll" className="flex-1 p-4 md:p-8 space-y-6 overflow-y-auto">
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+            {/* MAIN VIEW CONTAINER */}
+            <main id="main-dashboard-scroll" className="flex-1 p-3.5 sm:p-6 md:p-8 overflow-y-auto pb-24 md:pb-8">
+              <div className="max-w-6xl w-full mx-auto space-y-4 sm:space-y-6">
                 
-                {/* CORE AREA CELL (Col-span 8) - Interactive active sub-view */}
-                <div className="lg:col-span-8 flex flex-col gap-6">
-                  {/* File browser subheader */}
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm">
-                    <div className="min-w-0">
-                      <h2 className="text-sm font-bold font-display text-zinc-950 tracking-tight flex items-center gap-2 uppercase">
-                        {activeTab === "drive" && (
-                          <>
-                            <HardDrive className="h-5 w-5 text-indigo-600 shrink-0" />
-                            <span>Explorer Storage</span>
-                            <InfoTooltip text="View and manage your Google Drive files in a clean, standard view." />
-                          </>
-                        )}
-                        {activeTab === "organizer" && (
-                          <>
-                            <Sparkles className="h-5 w-5 text-indigo-600 shrink-0" />
-                            <span>Generative Classification Suite</span>
-                            <InfoTooltip text="Our AI reads your file names and types to group them into smart folders automatically." />
-                          </>
-                        )}
-                        {activeTab === "backup" && (
-                          <>
-                            <RefreshCw className="h-5 w-5 text-indigo-600 shrink-0" />
-                            <span>Continuous Backups Terminal</span>
-                            <InfoTooltip text="Set rules to automatically copy files from one folder to another so they are never lost." />
-                          </>
-                        )}
-                        {activeTab === "tasks" && (
-                          <>
-                            <ListTodo className="h-5 w-5 text-indigo-600 shrink-0" />
-                            <span>Google Calendar & Task Planner</span>
-                            <InfoTooltip text="Create alarms and daily recurring schedules so you never forget to check your work." />
-                          </>
-                        )}
-                        {activeTab === "reports" && (
-                          <>
-                            <BarChart3 className="h-5 w-5 text-indigo-600 shrink-0" />
-                            <span>Reporting Dashboard</span>
-                            <InfoTooltip text="See a summary of what the app has been doing for you recently." />
-                          </>
-                        )}
-                        {activeTab === "image_gen" && (
-                          <>
-                            <ImageIcon className="h-5 w-5 text-indigo-600 shrink-0" />
-                            <span>Image Generator AI</span>
-                            <InfoTooltip text="Type a description and we'll create a brand new custom picture for you using AI." />
-                          </>
-                        )}
-                        {activeTab === "chat" && (
-                          <>
-                            <Bot className="h-5 w-5 text-indigo-600 shrink-0" />
-                            <span>Gemini AI Chatbot</span>
-                            <InfoTooltip text="Engage in multi-turn conversation with specialized role presets and model selection." />
-                          </>
-                        )}
-                      </h2>
-                      <p className="text-xs text-zinc-500 mt-1 first-letter:uppercase">
-                        {activeTab === "drive" && "Visualise files stored on connected Google Drive directly."}
-                        {activeTab === "organizer" && "Let Artificial Intelligence analyse files metadata categories for organising."}
-                        {activeTab === "backup" && "Coordinate auto schedule logs and simulated replication rules."}
-                        {activeTab === "tasks" && "Set clock alarms and scheduled reminder checks easily."}
-                        {activeTab === "reports" && "Visualise key storage activities, track backup coverage over time."}
-                        {activeTab === "image_gen" && "Generate perfect-fit images for phone wallpapers or web banners using AI."}
-                        {activeTab === "chat" && "Converse with multi-role Gemini models (gemini-3.8-flash, gemini-3.1-flash-lite, gemini-3.1-pro-preview)."}
+                {/* CALM VIEW HEADER */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 pb-3 sm:pb-4 border-b border-slate-200/70 dark:border-slate-800">
+                  <AnimatePresence mode="wait" initial={false}>
+                    <motion.div
+                      key={`view-header-${activeTab}`}
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                    >
+                      <h1 className="text-base sm:text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+                        {activeTab === "drive" && "Google Drive"}
+                        {activeTab === "sheets" && "Google Sheets"}
+                        {activeTab === "organizer" && "Smart Organizer"}
+                        {activeTab === "backup" && "Cloud Backups"}
+                        {activeTab === "tasks" && "Google Tasks"}
+                        {activeTab === "reports" && "Activity Reports"}
+                        {activeTab === "chat" && "Gemini Assistant"}
+                      </h1>
+                      <p className="hidden sm:block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        {activeTab === "drive" && "Browse, preview, search, and manage files in your connected Drive."}
+                        {activeTab === "sheets" && "Inspect sheets, edit cell values inline, and export drive inventories."}
+                        {activeTab === "organizer" && "Plan and execute folder organization using custom rules and AI assistance."}
+                        {activeTab === "backup" && "Configure automated folder backups and review synchronization history."}
+                        {activeTab === "tasks" && "Track tasks, set recurring reminders, and send summary email reports."}
+                        {activeTab === "reports" && "Review audited file operations, storage distribution, and export logs."}
+                        {activeTab === "chat" && "Consult Gemini models for drive analysis, categorization advice, and assistance."}
                       </p>
-                    </div>
+                    </motion.div>
+                  </AnimatePresence>
 
-                    <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap shrink-0">
-                      {activeTab === "drive" && (
-                        <div className="relative flex items-center w-full sm:w-auto">
-                          <Search className="absolute left-3 h-3.5 w-3.5 text-zinc-400 pointer-events-none" />
-                          <input
-                            id="explorer-storage-search-input"
-                            type="text"
-                            value={storageSearchQuery}
-                            onChange={(e) => setStorageSearchQuery(e.target.value)}
-                            placeholder="Filter files in real-time..."
-                            aria-label="Filter files in real-time"
-                            className="w-full sm:w-56 md:w-64 rounded-xl border border-zinc-200 bg-zinc-50 py-1.5 pl-8 pr-8 text-xs font-medium text-zinc-800 placeholder:text-zinc-400 focus:border-indigo-500 focus:bg-white focus:outline-none transition shadow-2xs"
-                          />
-                          {storageSearchQuery && (
-                            <button
-                              id="btn-clear-explorer-search"
-                              onClick={() => setStorageSearchQuery("")}
-                              className="absolute right-2 p-1 rounded-md text-zinc-400 hover:text-zinc-600 hover:bg-zinc-200/60 transition cursor-pointer"
-                              title="Clear search"
-                              aria-label="Clear search"
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          )}
-                        </div>
-                      )}
+                  <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 self-end sm:self-auto">
+                    {activeTab === "drive" && (
+                      <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400 mr-1">
+                        {files.length} {files.length === 1 ? "file" : "files"}
+                      </span>
+                    )}
 
-                      {activeTab === "drive" && storageSearchQuery && (
-                        <span className="text-[11px] font-mono font-medium text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1 shrink-0">
-                          {filteredDriveFiles.length} of {files.length} {filteredDriveFiles.length === 1 ? "file" : "files"}
-                        </span>
-                      )}
-
+                    {(activeTab === "drive" || activeTab === "organizer") && (
                       <button
-                        id="btn-sync-drive-top"
-                        onClick={handleManualRefresh}
-                        disabled={isSyncing}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-200 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 transition cursor-pointer shrink-0"
+                        onClick={() => setShowNeuralTopology(!showNeuralTopology)}
+                        className={`hidden sm:inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition cursor-pointer ${
+                          showNeuralTopology
+                            ? "border-indigo-500/40 bg-indigo-50/70 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-500/30"
+                            : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+                        }`}
+                        title="Toggle Generative Neural Drive Topology"
                       >
-                        <RefreshCw className={`h-3.5 w-3.5 text-zinc-500 ${isSyncing ? 'animate-spin' : ''}`} />
-                        <span className="hidden sm:inline">Refresh Workspace</span>
+                        <Cpu className="h-3.5 w-3.5 text-indigo-500" />
+                        <span>Topology {showNeuralTopology ? "On" : "Off"}</span>
                       </button>
-                    </div>
-                  </div>
+                    )}
 
-                  {/* Active Screen Tab View */}
-                  <div className="min-w-0 transition-opacity duration-200">
+                    <button
+                      id="btn-sync-drive-top"
+                      onClick={handleManualRefresh}
+                      disabled={isSyncing}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 sm:px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition cursor-pointer"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 text-slate-500 dark:text-slate-400 ${isSyncing ? 'animate-spin text-indigo-500' : ''}`} />
+                      <span>{isSyncing ? "Syncing..." : "Refresh"}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Generative Neural Drive Synapse Canvas (Desktop Power Feature) */}
+                <AnimatePresence>
+                  {(activeTab === "drive" || activeTab === "organizer") && showNeuralTopology && (
+                    <motion.div
+                      key="neural-canvas-container"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.22, ease: "easeInOut" }}
+                      className="hidden md:block"
+                    >
+                      <NeuralSynapseCanvas 
+                        files={files} 
+                        isSyncing={isSyncing} 
+                        filesInPlan={filesInPlan} 
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* ACTIVE TAB SCREEN WITH FRAMER-MOTION TRANSITION */}
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.div
+                    key={`view-content-${activeTab}`}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ 
+                      duration: 0.22, 
+                      ease: [0.16, 1, 0.3, 1] 
+                    }}
+                    className="w-full"
+                  >
                     {activeTab === "drive" && (
                       <DriveBrowser 
                         token={token} 
-                        files={filteredDriveFiles} 
+                        files={files} 
                         onRefresh={handleManualRefresh} 
                         addLog={addLog}
                         filesInPlan={filesInPlan}
-                        externalSearchQuery={storageSearchQuery}
-                        onClearExternalSearch={() => setStorageSearchQuery("")}
+                        onScheduleReminder={handleOpenScheduleModal}
+                      />
+                    )}
+
+                    {activeTab === "sheets" && (
+                      <SheetsManager 
+                        token={token} 
+                        files={files} 
+                        onRefreshDrive={handleManualRefresh} 
+                        addLog={addLog}
                       />
                     )}
 
@@ -790,6 +1291,10 @@ export default function App() {
                         onTriggerNotification={triggerNotification}
                         reminders={reminders}
                         setReminders={setReminders}
+                        files={files}
+                        onOpenScheduleModal={handleOpenScheduleModal}
+                        onExecuteReminderAction={handleExecuteReminderAction}
+                        onEmailApprovalRequest={(req) => setPendingEmailApproval(req)}
                       />
                     )}
 
@@ -801,218 +1306,218 @@ export default function App() {
                       />
                     )}
 
-                    {activeTab === "image_gen" && (
-                      <ImageGenerator />
-                    )}
-
                     {activeTab === "chat" && (
-                      <GeminiChatbot />
+                      <GeminiChatbot 
+                        files={files}
+                        clearTrigger={chatClearTrigger}
+                        exportTrigger={chatExportTrigger}
+                      />
                     )}
-                  </div>
-                </div>
-
-                {/* AUXILIARY META BENTO DECK CELL (Col-span 4 on desktop) */}
-                <div className="lg:col-span-4 flex flex-col gap-6">
-                  
-                  {/* BENTO CARD 1: BACKUPS GRAPHICS DECK */}
-                  <div className="bg-indigo-600 text-white rounded-3xl p-6 flex flex-col justify-between h-[210px] relative overflow-hidden shadow-lg select-none">
-                    {/* Abstract watermarks */}
-                    <div className="absolute -right-12 -bottom-12 h-44 w-44 rounded-full bg-indigo-500/25 blur-xl"></div>
-                    <div className="absolute -left-6 -top-6 h-24 w-24 rounded-full bg-indigo-400/20 blur-lg"></div>
-
-                    <div className="space-y-1 relative z-10">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] uppercase font-mono tracking-widest bg-indigo-500/50 px-2 py-0.5 rounded-full font-bold">
-                          Cloud Backups
-                        </span>
-                        <Laptop className="h-4 w-4 text-indigo-200" />
-                      </div>
-                      <h3 className="font-display font-bold text-lg leading-tight pt-1.5 flex items-center">
-                        Backup Integrity Status
-                        <span className="ml-1"><InfoTooltip text="Shows how much of your Drive has been safely backed up based on your rules." /></span>
-                      </h3>
-                      <p className="text-[11px] text-indigo-100 leading-normal max-w-[240px]">
-                        Continuous secure synchronisation running between workspace nodes.
-                      </p>
-                    </div>
-
-                    <div className="flex items-end justify-between relative z-10">
-                      <div>
-                        {files.length > 0 ? (
-                          <div className="flex items-baseline gap-1">
-                            <span className="text-3xl font-extrabold tracking-tight">
-                              {Math.min(100, Math.floor(82 + (files.length * 1.5)))}%
-                            </span>
-                            <span className="text-xs text-indigo-200 font-mono font-bold">synced</span>
-                          </div>
-                        ) : (
-                          <span className="text-xs font-mono font-bold text-indigo-200">Waiting for files...</span>
-                        )}
-                        <span className="text-[10px] text-indigo-200 font-mono block">Node: Laptop-Pro</span>
-                      </div>
-
-                      <button
-                        onClick={handleManualRefresh}
-                        className="h-10 w-10 flex items-center justify-center rounded-2xl bg-white/10 hover:bg-white/20 transition-all border border-white/25 text-white cursor-pointer active:scale-90"
-                        title="Force cloud replication sweep"
-                      >
-                        <RefreshCw className={`h-4.5 w-4.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* BENTO CARD 2: PENDING ALARMS & TIMECHECKS */}
-                  <div className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm flex flex-col justify-between h-[230px] select-none">
-                    <div className="space-y-3.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[9.5px] uppercase font-mono tracking-widest bg-zinc-100 px-2.5 py-0.5 rounded-full text-zinc-500 font-semibold flex items-center gap-1">
-                          <Clock className="h-3 w-3" /> Scheduled Alarms
-                          <InfoTooltip text="The app checks these alarms in the background and rings when it's time!" />
-                        </span>
-                        <span className="text-[10px] text-indigo-600 font-semibold cursor-pointer hover:underline" onClick={() => { setActiveTab("tasks"); window.scrollTo({ top: 0, behavior: "smooth" }); }}>
-                          Open Planner →
-                        </span>
-                      </div>
-
-                      <div className="space-y-2">
-                        {reminders.length === 0 ? (
-                          <span className="text-xs text-zinc-400 block py-4 text-center">No reminders configured.</span>
-                        ) : (
-                          reminders.slice(0, 2).map((r, rIdx) => (
-                            <div key={`rem-${r.id}-${rIdx}`} className="flex items-center justify-between p-2 rounded-xl bg-zinc-50 border border-zinc-150">
-                              <div className="min-w-0 flex-1">
-                                <span className="text-xs font-semibold text-zinc-800 block truncate leading-tight">
-                                  {r.title}
-                                </span>
-                                <span className="text-[10px] font-mono text-zinc-400 block mt-0.5">
-                                  Triggers: {r.triggerTime} daily
-                                </span>
-                              </div>
-                              <span className={`text-[9px] font-bold font-mono px-1.5 py-0.5 rounded ml-2 shrink-0 ${
-                                r.status === 'active' ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-500'
-                              }`}>
-                                {r.status}
-                              </span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="text-[10px] text-zinc-400 font-mono pt-2 border-t border-zinc-100">
-                      Interval poll checking: <span className="text-emerald-600 font-semibold">Active (15s)</span>
-                    </div>
-                  </div>
-
-                  {/* BENTO CARD 3: AUDITED LOG SYSTEM */}
-                  <div className="bg-white border border-zinc-200 rounded-3xl p-6 shadow-sm flex flex-col flex-1 min-h-[260px] max-h-[350px] overflow-hidden">
-                    <div className="flex items-center justify-between border-b border-zinc-150 pb-3 mb-4 shrink-0">
-                      <h3 className="font-display font-bold text-zinc-900 text-xs uppercase tracking-wider flex items-center gap-1">
-                        <Activity className="h-4.5 w-4.5 text-indigo-600" /> System Action Logging
-                        <InfoTooltip text="A transparent list of every action the app has performed recently." />
-                      </h3>
-                      <div className="flex items-center gap-1.5">
-                        {exportToast ? (
-                          <span className="inline-flex items-center gap-1 text-[9px] font-mono font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                            <Check className="h-2.5 w-2.5" /> {exportToast}
-                          </span>
-                        ) : (
-                          <span className="text-[9px] bg-zinc-100 text-zinc-600 rounded px-1.5 py-0.5 font-mono">
-                            {activities.length} logs
-                          </span>
-                        )}
-                        <div className="flex items-center gap-1 border-l border-zinc-200 pl-1.5">
-                          <button
-                            id="btn-export-logs-csv"
-                            onClick={() => exportActivities("csv")}
-                            disabled={activities.length === 0}
-                            title="Export System Action Logging history as CSV file"
-                            aria-label="Export System Action Logging history to CSV"
-                            className="inline-flex items-center gap-1 rounded bg-zinc-100 px-1.5 py-0.5 text-[9px] font-mono font-semibold text-zinc-700 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 border border-zinc-200 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
-                          >
-                            <Download className="h-2.5 w-2.5 text-zinc-500" />
-                            CSV
-                          </button>
-                          <button
-                            id="btn-export-logs-json"
-                            onClick={() => exportActivities("json")}
-                            disabled={activities.length === 0}
-                            title="Export System Action Logging history as JSON file"
-                            aria-label="Export System Action Logging history to JSON"
-                            className="inline-flex items-center gap-1 rounded bg-zinc-100 px-1.5 py-0.5 text-[9px] font-mono font-semibold text-zinc-700 hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 border border-zinc-200 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
-                          >
-                            <FileCode className="h-2.5 w-2.5 text-zinc-500" />
-                            JSON
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex-1 overflow-y-auto space-y-2 pr-1 font-mono text-[10px] leading-relaxed">
-                      {activities.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full py-8 text-center text-zinc-400">
-                          <span>No system action events recorded yet.</span>
-                          <span className="text-[9px] text-zinc-300 mt-1">Actions performed across the app will appear here.</span>
-                        </div>
-                      ) : (
-                        activities.map((act, actIdx) => (
-                          <div key={`act-${act.id}-${actIdx}`} className="p-2 border border-zinc-150 rounded-xl bg-zinc-50 hover:bg-zinc-100/50 transition duration-155">
-                            <div className="flex justify-between items-center text-[9px] text-zinc-400 mb-1">
-                              <span className="font-semibold text-[8px] uppercase tracking-wider underline text-zinc-600">
-                                [{act.actionType}]
-                              </span>
-                              <span>{act.timestamp}</span>
-                            </div>
-                            <p className="text-zinc-705 text-zinc-700 font-medium font-sans leading-relaxed">{act.message}</p>
-                            {act.details && (
-                              <span className="text-[8px] text-zinc-400 block border-t border-zinc-100 pt-1 mt-1 truncate">
-                                {act.details}
-                              </span>
-                            )}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-
-                </div>
-
-                {/* BENTO COMMAND ASSISTANCE TIP BANNER (Col-span 12) */}
-                <div className="lg:col-span-12 bg-zinc-900 text-zinc-350 rounded-3xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-5 shadow-inner select-none relative overflow-hidden">
-                  <div className="absolute right-0 top-0 h-full w-48 bg-zinc-800/25 skew-x-12"></div>
-                  
-                  <div className="space-y-1 relative z-10">
-                    <h4 className="font-display font-semibold text-sm text-white flex items-center gap-2">
-                      <Sparkles className="h-4.5 w-4.5 text-indigo-400" />
-                      <span>Workspace Deep-Thinking Helper Tip</span>
-                      <InfoTooltip text="Our most powerful feature: Let the AI organise your files for you!" />
-                    </h4>
-                    <p className="text-xs text-zinc-400 max-w-2xl leading-relaxed">
-                      Let artificial intelligence clustering models perform high-thinking tag categorisation sweeps automatically on your raw Google Drive files! Focus your resources on output.
-                    </p>
-                  </div>
-
-                  <button
-                    id="btn-launch-organiser-banner"
-                    onClick={() => {
-                      console.log("[App] 'Launch Organiser' clicked. Previous activeTab:", activeTab);
-                      console.log("[App] Updating activeTab to 'organizer'");
-                      setActiveTab("organizer");
-                      document.getElementById("main-dashboard-scroll")?.scrollTo({ top: 0, behavior: "smooth" });
-                      window.scrollTo({ top: 0, behavior: "smooth" });
-                    }}
-                    className="relative z-10 rounded-xl bg-white text-zinc-950 px-4 py-2 text-xs font-bold hover:bg-indigo-50 transition shrink-0 self-start md:self-auto shadow-sm active:scale-95 cursor-pointer"
-                  >
-                    Launch Organiser
-                  </button>
-                </div>
+                  </motion.div>
+                </AnimatePresence>
 
               </div>
             </main>
+
+            {/* MOBILE BOTTOM NAVIGATION BAR (PHONE APP FRIENDLY VERSION) */}
+            <nav 
+              aria-label="Mobile app navigation"
+              className="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200/80 dark:border-slate-800/80 px-2 py-1.5 flex items-center justify-around shadow-lg"
+            >
+              <button
+                type="button"
+                id="mobile-nav-drive"
+                onClick={() => { setActiveTab("drive"); setIsMobileMoreOpen(false); }}
+                className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
+                  activeTab === "drive"
+                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                <Folder className="h-5 w-5" />
+                <span className="text-[10px] mt-0.5">Drive</span>
+              </button>
+
+              <button
+                type="button"
+                id="mobile-nav-organizer"
+                onClick={() => { setActiveTab("organizer"); setIsMobileMoreOpen(false); }}
+                className={`relative flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
+                  activeTab === "organizer"
+                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                <FolderKanban className="h-5 w-5" />
+                <span className="text-[10px] mt-0.5">Organize</span>
+                {Object.keys(filesInPlan).length > 0 && (
+                  <span className="absolute top-1 right-3 h-2 w-2 rounded-full bg-indigo-600 dark:bg-indigo-400 ring-2 ring-white dark:ring-slate-900" />
+                )}
+              </button>
+
+              <button
+                type="button"
+                id="mobile-nav-tasks"
+                onClick={() => { setActiveTab("tasks"); setIsMobileMoreOpen(false); }}
+                className={`relative flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
+                  activeTab === "tasks"
+                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                <ListTodo className="h-5 w-5" />
+                <span className="text-[10px] mt-0.5">Tasks</span>
+                {reminders.filter(r => r.status === 'active').length > 0 && (
+                  <span className="absolute top-1 right-2.5 h-4 w-4 rounded-full bg-indigo-600 text-white text-[9px] font-mono flex items-center justify-center ring-2 ring-white dark:ring-slate-900 font-bold">
+                    {reminders.filter(r => r.status === 'active').length}
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                id="mobile-nav-chat"
+                onClick={() => { setActiveTab("chat"); setIsMobileMoreOpen(false); }}
+                className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
+                  activeTab === "chat"
+                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                <Bot className="h-5 w-5" />
+                <span className="text-[10px] mt-0.5">Assistant</span>
+              </button>
+
+              <button
+                type="button"
+                id="mobile-nav-more"
+                onClick={() => setIsMobileMoreOpen(!isMobileMoreOpen)}
+                className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
+                  ["sheets", "backup", "reports"].includes(activeTab) || isMobileMoreOpen
+                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
+                }`}
+              >
+                <Layers className="h-5 w-5" />
+                <span className="text-[10px] mt-0.5">More</span>
+              </button>
+            </nav>
+
+            {/* Mobile "More" Drawer / Sheet */}
+            <AnimatePresence>
+              {isMobileMoreOpen && (
+                <>
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={() => setIsMobileMoreOpen(false)}
+                    className="fixed inset-0 z-40 bg-slate-950/40 backdrop-blur-xs md:hidden"
+                  />
+                  <motion.div
+                    initial={{ y: "100%" }}
+                    animate={{ y: 0 }}
+                    exit={{ y: "100%" }}
+                    transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                    className="fixed bottom-14 left-0 right-0 z-50 md:hidden bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 rounded-t-2xl p-4 shadow-2xl space-y-2"
+                  >
+                    <div className="w-10 h-1 bg-slate-200 dark:bg-slate-700 rounded-full mx-auto mb-2" />
+                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-2 pb-1">
+                      Additional Workspaces
+                    </p>
+
+                    <button
+                      type="button"
+                      id="mobile-more-sheets"
+                      onClick={() => { setActiveTab("sheets"); setIsMobileMoreOpen(false); }}
+                      className={`w-full flex items-center justify-between p-3 rounded-xl text-left text-xs font-medium transition cursor-pointer ${
+                        activeTab === "sheets" ? "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-semibold" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <FileSpreadsheet className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                        <span>Google Sheets</span>
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-400">
+                        {files.filter(f => f.mimeType === "application/vnd.google-apps.spreadsheet" || f.name.endsWith(".csv")).length}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      id="mobile-more-backup"
+                      onClick={() => { setActiveTab("backup"); setIsMobileMoreOpen(false); }}
+                      className={`w-full flex items-center justify-between p-3 rounded-xl text-left text-xs font-medium transition cursor-pointer ${
+                        activeTab === "backup" ? "bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-semibold" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <RefreshCw className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                        <span>Cloud Backups</span>
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-400">{backupJobs.length}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      id="mobile-more-reports"
+                      onClick={() => { setActiveTab("reports"); setIsMobileMoreOpen(false); }}
+                      className={`w-full flex items-center justify-between p-3 rounded-xl text-left text-xs font-medium transition cursor-pointer ${
+                        activeTab === "reports" ? "bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-semibold" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <BarChart3 className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                        <span>Activity Reports</span>
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-400">{activities.length}</span>
+                    </button>
+
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={toggleTheme}
+                        className="flex items-center gap-2 p-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
+                      >
+                        {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                        <span>{isDarkMode ? "Light Mode" : "Dark Mode"}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="flex items-center gap-1.5 p-2 text-xs text-rose-600 dark:text-rose-400 font-medium cursor-pointer"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        <span>Disconnect</span>
+                      </button>
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
           </div>
 
         </div>
       )}
+
+      {/* Smart Task Reminder & Scheduled Action Modal */}
+      <SetReminderModal
+        isOpen={isScheduleReminderModalOpen}
+        onClose={() => setIsScheduleReminderModalOpen(false)}
+        files={files}
+        initialFile={scheduleReminderFile}
+        onSaveReminder={handleSaveReminder}
+        token={token}
+        userEmail={user?.email || "Steven.lees.production@gmail.com"}
+      />
+
+      {/* Mandatory Human Email Approval Security Modal */}
+      <EmailApprovalModal
+        request={pendingEmailApproval}
+        onApprove={handleApproveEmail}
+        onDecline={handleDeclineEmail}
+        isSending={isSendingApprovedEmail}
+      />
     </div>
   );
 }

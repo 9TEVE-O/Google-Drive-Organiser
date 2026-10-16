@@ -1,6 +1,8 @@
 import React from "react";
 import { User } from "firebase/auth";
-import { HardDrive, LogOut, CheckSquare, Bell, RefreshCw, Layers, Moon, Sun, Bot, Sparkles } from "lucide-react";
+import { RefreshCw, Layers, Moon, Sun, LogOut } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import ContextualActionToolbar, { DashboardTab } from "./ContextualActionToolbar";
 
 interface HeaderProps {
   user: User | null;
@@ -12,6 +14,9 @@ interface HeaderProps {
   isSyncing: boolean;
   isDarkMode: boolean;
   toggleTheme: () => void;
+  isEmptyState?: boolean;
+  onActionSelect?: (actionId: string) => void;
+  onFileDrop?: (files: FileList) => void;
 }
 
 export default function Header({
@@ -24,230 +29,169 @@ export default function Header({
   isSyncing,
   isDarkMode,
   toggleTheme,
+  isEmptyState = false,
+  onActionSelect,
+  onFileDrop,
 }: HeaderProps) {
+  const tabKey: DashboardTab = (
+    ["drive", "sheets", "organizer", "backup", "tasks", "reports", "chat"].includes(activeTab)
+      ? activeTab
+      : "drive"
+  ) as DashboardTab;
+
+  const getTabLabel = (id: string) => {
+    switch (id) {
+      case "drive": return "Google Drive";
+      case "sheets": return "Google Sheets";
+      case "organizer": return "Smart Organizer";
+      case "backup": return "Cloud Backups";
+      case "tasks": return "Google Tasks";
+      case "reports": return "Activity Reports";
+      case "chat": return "Gemini Assistant";
+      default: return id;
+    }
+  };
+
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-zinc-200 bg-white/95 backdrop-blur-md md:hidden" data-revert-dark="false">
-      <div className="mx-auto flex max-w-7xl h-16 items-center justify-between px-4 sm:px-6 lg:px-8">
-        {/* Brand Logo */}
+    <header className="sticky top-0 z-30 w-full border-b border-slate-200/80 dark:border-slate-800/80 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-7xl min-h-14 items-center justify-between px-4 sm:px-6 py-2 gap-3 flex-wrap">
+        {/* Brand Logo (Mobile) & Breadcrumb (Desktop) */}
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-md shadow-indigo-100 data-preserve-color">
-            <Layers className="h-5 w-5" />
+          {/* Mobile Brand Logo */}
+          <div className="flex md:hidden items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 text-white shadow-xs">
+              <Layers className="h-4 w-4" />
+            </div>
+            <span className="text-sm font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+              Drive Organizer
+            </span>
           </div>
-          <div>
-            <span className="font-display text-lg font-bold tracking-tight text-slate-900">
-              DriveOrganiser
-            </span>
-            <span className="ml-1.5 rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700 font-mono">
-              v2.5
-            </span>
+
+          {/* Desktop Breadcrumb & View Status */}
+          <div className="hidden md:flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 text-white shadow-xs">
+              <Layers className="h-3.5 w-3.5" />
+            </div>
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="font-medium text-slate-500 dark:text-slate-400">Workspace</span>
+              <span className="text-slate-400 dark:text-slate-600">/</span>
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.span
+                  key={`breadcrumb-${activeTab}`}
+                  initial={{ opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -5 }}
+                  transition={{ duration: 0.18, ease: "easeOut" }}
+                  className="font-semibold text-slate-900 dark:text-slate-100"
+                >
+                  {getTabLabel(activeTab)}
+                </motion.span>
+              </AnimatePresence>
+            </div>
+            {isSyncing && (
+              <span className="flex items-center gap-1 text-[11px] font-mono text-indigo-600 dark:text-indigo-400 ml-2">
+                <RefreshCw className="h-3 w-3 animate-spin" />
+                <span>Syncing...</span>
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Dynamic Navigation Tabs */}
-        {user && (
-          <nav className="hidden md:flex space-x-1">
-            <button
-              id="nav-btn-drive"
-              onClick={() => setActiveTab("drive")}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                activeTab === "drive"
-                  ? "bg-indigo-50 text-indigo-700"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              Google Drive
-            </button>
-            <button
-              id="nav-btn-organizer"
-              onClick={() => setActiveTab("organizer")}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                activeTab === "organizer"
-                  ? "bg-indigo-50 text-indigo-700"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              High-Thinking Organiser
-            </button>
-            <button
-              id="nav-btn-backup"
-              onClick={() => setActiveTab("backup")}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                activeTab === "backup"
-                  ? "bg-indigo-50 text-indigo-700"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              Cloud Backups
-            </button>
-            <button
-              id="nav-btn-tasks"
-              onClick={() => setActiveTab("tasks")}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                activeTab === "tasks"
-                  ? "bg-indigo-50 text-indigo-700"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              Google Tasks
-            </button>
-            <button
-              id="nav-btn-chat"
-              onClick={() => setActiveTab("chat")}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors flex items-center gap-1.5 ${
-                activeTab === "chat"
-                  ? "bg-indigo-50 text-indigo-700 font-semibold"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              }`}
-            >
-              <Bot className="h-4 w-4" />
-              <span>AI Chat</span>
-            </button>
-          </nav>
+        {/* In-Flow Header Actions (Normal State) */}
+        {!isEmptyState && (
+          <div className="flex items-center gap-2 order-3 sm:order-2">
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={`header-actions-${tabKey}`}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                className="flex items-center gap-2"
+              >
+                <ContextualActionToolbar
+                  activeTab={tabKey}
+                  isEmptyState={false}
+                  onActionSelect={onActionSelect || (() => {})}
+                  onFileDrop={onFileDrop}
+                />
+              </motion.div>
+            </AnimatePresence>
+          </div>
         )}
 
-        {/* User Stats & Controls */}
-        <div className="flex items-center gap-4">
+        {/* User Controls */}
+        <div className="flex items-center gap-2 order-2 sm:order-3">
           {user ? (
             <>
-              {/* Sync Spinner */}
               {isSyncing && (
-                <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 data-preserve-color">
-                  <RefreshCw className="h-3 w-3 animate-spin text-emerald-600" />
-                  <span className="font-mono text-[10px] hidden sm:inline">syncing</span>
+                <div className="flex md:hidden items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-400 font-mono">
+                  <RefreshCw className="h-3 w-3 animate-spin" />
                 </div>
               )}
 
-              {/* Task Alerts Indicator */}
-              <div className="relative cursor-pointer rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition-colors">
-                <CheckSquare className="h-5 w-5" />
-                {taskAlertsCount > 0 && (
-                  <span className="absolute top-1.5 right-1.5 flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-600"></span>
-                  </span>
-                )}
-              </div>
-
-              {/* User Profile Info */}
-              <div className="flex items-center gap-3 border-l border-slate-200 pl-4">
-                <button
-                  onClick={toggleTheme}
-                  title="Toggle Light/Dark Mode"
-                  className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition-colors"
-                >
-                  {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                </button>
-
-                <div className="hidden lg:flex flex-col items-end pl-2 border-l border-slate-200">
-                  <span className="text-xs font-semibold text-slate-850 max-w-[150px] truncate">
-                    {user.displayName || "Drive Sync User"}
-                  </span>
-                  <span className="text-[10px] text-slate-400 font-mono truncate max-w-[150px]">
-                    {user.email}
-                  </span>
-                </div>
-                {user.photoURL ? (
-                  <img
-                    src={user.photoURL}
-                    referrerPolicy="no-referrer"
-                    alt={user.displayName || "Avatar"}
-                    className="h-8 w-8 rounded-full border border-indigo-200 shadow-inner"
-                  />
-                ) : (
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-indigo-700 font-bold text-xs ring-1 ring-indigo-200">
-                    {user.displayName?.charAt(0) || "U"}
-                  </div>
-                )}
-                
-                {/* Logout Button */}
-                <button
-                  id="header-logout-btn"
-                  onClick={onLogout}
-                  title="Sign out of Google"
-                  className="rounded-lg p-2 text-rose-500 hover:bg-rose-50 transition-colors"
-                >
-                  <LogOut className="h-4 w-4" />
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="flex items-center gap-2">
               <button
                 onClick={toggleTheme}
-                title="Toggle Light/Dark Mode"
-                className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 transition-colors mr-2"
+                title="Toggle Theme"
+                className="rounded-lg p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </button>
-              <span className="text-xs font-mono text-slate-400 flex items-center gap-1">
-                <HardDrive className="h-3 w-3" /> Status: Unauthenticated
-              </span>
-            </div>
+
+              {user.photoURL ? (
+                <img
+                  src={user.photoURL}
+                  referrerPolicy="no-referrer"
+                  alt={user.displayName || "Avatar"}
+                  className="h-7 w-7 rounded-full border border-slate-200 dark:border-slate-700"
+                />
+              ) : (
+                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white font-semibold text-xs">
+                  {user.displayName?.charAt(0) || "U"}
+                </div>
+              )}
+
+              <button
+                id="header-logout-btn"
+                onClick={onLogout}
+                title="Sign out"
+                className="md:hidden rounded-lg p-2 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={toggleTheme}
+              title="Toggle Theme"
+              className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
           )}
         </div>
       </div>
 
-      {/* Mobile Nav Bar */}
-      {user && (
-        <div className="flex md:hidden border-t border-slate-100 bg-slate-50 px-2 py-1 justify-around">
-          <button
-            onClick={() => setActiveTab("drive")}
-            className={`flex flex-col items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium ${
-              activeTab === "drive" ? "text-indigo-600" : "text-slate-500"
-            }`}
+      {/* In-Flow Empty State Intent */}
+      <AnimatePresence mode="wait">
+        {isEmptyState && (
+          <motion.div
+            key={`header-empty-${tabKey}`}
+            initial={{ opacity: 0, y: 8, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: "auto" }}
+            exit={{ opacity: 0, y: -6, height: 0 }}
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden border-t border-slate-200/80 dark:border-slate-800/80 px-4 sm:px-6 py-4 bg-slate-50/40 dark:bg-slate-900/40"
           >
-            Drive
-          </button>
-          <button
-            onClick={() => setActiveTab("organizer")}
-            className={`flex flex-col items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium ${
-              activeTab === "organizer" ? "text-indigo-600" : "text-slate-500"
-            }`}
-          >
-            Organiser
-          </button>
-          <button
-            onClick={() => setActiveTab("backup")}
-            className={`flex flex-col items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium ${
-              activeTab === "backup" ? "text-indigo-600" : "text-slate-500"
-            }`}
-          >
-            Backups
-          </button>
-          <button
-            onClick={() => setActiveTab("tasks")}
-            className={`flex flex-col items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium ${
-              activeTab === "tasks" ? "text-indigo-600" : "text-slate-550"
-            }`}
-          >
-            Tasks
-          </button>
-          <button
-            onClick={() => setActiveTab("reports")}
-            className={`flex flex-col items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium ${
-              activeTab === "reports" ? "text-indigo-600" : "text-slate-550"
-            }`}
-          >
-            Reports
-          </button>
-          <button
-            onClick={() => setActiveTab("image_gen")}
-            className={`flex flex-col items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium ${
-              activeTab === "image_gen" ? "text-indigo-600" : "text-slate-500"
-            }`}
-          >
-            Images
-          </button>
-          <button
-            onClick={() => setActiveTab("chat")}
-            className={`flex flex-col items-center gap-0.5 rounded px-2 py-1 text-[11px] font-medium ${
-              activeTab === "chat" ? "text-indigo-600" : "text-slate-500"
-            }`}
-          >
-            Chat
-          </button>
-        </div>
-      )}
+            <ContextualActionToolbar
+              activeTab={tabKey}
+              isEmptyState={true}
+              onActionSelect={onActionSelect || (() => {})}
+              onFileDrop={onFileDrop}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </header>
   );
 }
