@@ -90,7 +90,6 @@ export default function App() {
 
   // Active navigation tab
   const [activeTab, setActiveTab] = useState<string>("drive");
-  const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
 
   // Lifted smart reminders state
   const [reminders, setReminders] = useState<SmartTaskReminder[]>([
@@ -918,227 +917,30 @@ export default function App() {
           </main>
         </div>
       ) : (
-        /* MAIN WORKSPACE INTERFACE */
-        <div className="flex-1 flex flex-col md:flex-row min-h-screen bg-slate-50 dark:bg-[#080d1a] text-slate-900 dark:text-slate-100 relative animate-warp-in">
-          
-          {/* DESKTOP SIDEBAR */}
-          <aside className="hidden md:flex w-64 bg-white/90 dark:bg-slate-900/90 border-r border-slate-200/80 dark:border-slate-800/80 backdrop-blur-xl flex-col justify-between p-4 h-screen sticky top-0 shrink-0 z-30">
-            <div className="space-y-6">
-              {/* Brand identity */}
-              <div className="flex items-center gap-3 px-2 pt-1">
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 text-white shadow-xs ring-1 ring-white/20 shrink-0">
-                  <Layers className="h-4.5 w-4.5" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-bold text-sm tracking-tight text-slate-900 dark:text-slate-100 font-display">
-                      Drive Organizer
-                    </span>
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" title="Active"></span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono tracking-tight">
-                    Workspace Synapse v0.9.1
-                  </p>
-                </div>
-              </div>
+        /* MAIN WORKSPACE INTERFACE WITH PERSISTENT TOP NAVIGATION BAR */
+        <div className="flex-1 flex flex-col min-h-screen bg-slate-50 dark:bg-[#080d1a] text-slate-900 dark:text-slate-100 relative animate-warp-in">
+          {/* PERSISTENT TOP NAVIGATION BAR (Always visible and easily accessible) */}
+          <Header 
+            user={user} 
+            onLogout={handleLogout} 
+            activityCount={activities.length}
+            taskAlertsCount={activities.filter(a => a.actionType === 'task').length}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            isSyncing={isSyncing}
+            isDarkMode={isDarkMode}
+            toggleTheme={toggleTheme}
+            isEmptyState={isCurrentViewEmpty}
+            onActionSelect={handleHeaderActionSelect}
+            onFileDrop={handleHeaderFileDrop}
+            fileCount={files.length}
+            activeRemindersCount={reminders.filter(r => r.status === 'active').length}
+            backupJobsCount={backupJobs.length}
+            hasPlan={Object.keys(filesInPlan).length > 0}
+          />
 
-              {/* Navigation Actions */}
-              <nav className="space-y-1">
-                <button
-                  id="nav-btn-drive"
-                  onClick={() => setActiveTab("drive")}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "drive"
-                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <HardDrive className={`h-4 w-4 ${activeTab === "drive" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
-                    <span>Google Drive</span>
-                  </div>
-                  <span className={`text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md ${
-                    activeTab === "drive" ? "bg-indigo-100/80 text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-300" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
-                  }`}>
-                    {files.length}
-                  </span>
-                </button>
-
-                {/* <button
-                  id="sidebar-nav-sheets"
-                  onClick={() => setActiveTab("sheets")}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "sheets"
-                      ? "bg-emerald-50/90 text-emerald-950 dark:bg-emerald-950/60 dark:text-emerald-200 font-semibold border-l-2 border-emerald-600 dark:border-emerald-400 shadow-xs"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <FileSpreadsheet className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                    <span>Google Sheets</span>
-                  </div>
-                  <span className={`text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md ${
-                    activeTab === "sheets" ? "bg-emerald-100/80 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
-                  }`}>
-                    {files.filter(f => f.mimeType === "application/vnd.google-apps.spreadsheet" || f.name.endsWith(".csv")).length}
-                  </span>
-                </button> */}
-
-                <button
-                  id="sidebar-nav-organizer"
-                  onClick={() => setActiveTab("organizer")}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "organizer"
-                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <FolderKanban className={`h-4 w-4 ${activeTab === "organizer" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
-                    <span>Smart Organizer</span>
-                  </div>
-                  {Object.keys(filesInPlan).length > 0 && (
-                    <span className="h-1.5 w-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400 animate-pulse"></span>
-                  )}
-                </button>
-
-                {/* <button
-                  id="sidebar-nav-backup"
-                  onClick={() => setActiveTab("backup")}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "backup"
-                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <RefreshCw className={`h-4 w-4 ${isSyncing ? 'animate-spin text-indigo-500' : ''}`} />
-                    <span>Cloud Backups</span>
-                  </div>
-                  <span className={`text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md ${
-                    activeTab === "backup" ? "bg-indigo-100/80 text-indigo-800 dark:bg-indigo-900/60 dark:text-indigo-300" : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
-                  }`}>
-                    {backupJobs.length}
-                  </span>
-                </button> */}
-
-                {/* <button
-                  id="sidebar-nav-tasks"
-                  onClick={() => setActiveTab("tasks")}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "tasks"
-                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <ListTodo className={`h-4 w-4 ${activeTab === "tasks" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
-                    <span>Google Tasks</span>
-                  </div>
-                  {reminders.filter(r => r.status === 'active').length > 0 && (
-                    <span className="text-[10px] font-mono tabular-nums font-semibold px-1.5 py-0.5 rounded-full bg-indigo-600 text-white">
-                      {reminders.filter(r => r.status === 'active').length}
-                    </span>
-                  )}
-                </button> */}
-
-                <button
-                  id="sidebar-nav-reports"
-                  onClick={() => setActiveTab("reports")}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "reports"
-                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <BarChart3 className={`h-4 w-4 ${activeTab === "reports" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
-                    <span>Reports</span>
-                  </div>
-                </button>
-
-                {/* <button
-                  id="sidebar-nav-chat"
-                  onClick={() => setActiveTab("chat")}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl font-medium text-xs transition-all cursor-pointer ${
-                    activeTab === "chat"
-                      ? "bg-indigo-50/90 text-indigo-950 dark:bg-indigo-950/60 dark:text-indigo-200 font-semibold border-l-2 border-indigo-600 dark:border-indigo-400 shadow-xs"
-                      : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-slate-800/60"
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Bot className={`h-4 w-4 ${activeTab === "chat" ? "text-indigo-600 dark:text-indigo-400" : ""}`} />
-                    <span>Gemini Assistant</span>
-                  </div>
-                </button> */}
-              </nav>
-            </div>
-
-            {/* Profile and Logout Section */}
-            <div className="border-t border-slate-200/80 dark:border-slate-800/80 pt-3 flex flex-col gap-2.5">
-              <div className="flex items-center gap-2.5 px-1">
-                {user?.photoURL ? (
-                  <img
-                    src={user.photoURL}
-                    referrerPolicy="no-referrer"
-                    alt={user.displayName || "Avatar"}
-                    className="h-8 w-8 rounded-full border border-slate-200 dark:border-slate-700 shrink-0"
-                  />
-                ) : (
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white font-semibold text-xs shrink-0 shadow-xs">
-                    {user?.displayName?.charAt(0) || "U"}
-                  </div>
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate">
-                    {user?.displayName || "Connected User"}
-                  </p>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 font-mono truncate">
-                    {user?.email}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1.5 pt-1">
-                <button
-                  onClick={toggleTheme}
-                  title="Toggle Theme"
-                  className="flex items-center justify-center p-2 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                >
-                  {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                </button>
-                <button
-                  id="sidebar-logout-btn"
-                  onClick={handleLogout}
-                  className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
-                >
-                  <LogOut className="h-3.5 w-3.5" />
-                  <span>Disconnect</span>
-                </button>
-              </div>
-            </div>
-          </aside>
-
-          {/* MAIN CONTENT AREA */}
-          <div className="flex-1 flex flex-col min-w-0">
-            {/* WORKSPACE HEADER WITH INTEGRATED CONTEXTUAL ACTION TOOLBAR */}
-            <Header 
-              user={user} 
-              onLogout={handleLogout} 
-              activityCount={activities.length}
-              taskAlertsCount={activities.filter(a => a.actionType === 'task').length}
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
-              isSyncing={isSyncing}
-              isDarkMode={isDarkMode}
-              toggleTheme={toggleTheme}
-              isEmptyState={isCurrentViewEmpty}
-              onActionSelect={handleHeaderActionSelect}
-              onFileDrop={handleHeaderFileDrop}
-            />
-
-            {/* MAIN VIEW CONTAINER */}
-            <main id="main-dashboard-scroll" className="flex-1 p-3.5 sm:p-6 md:p-8 overflow-y-auto pb-24 md:pb-8">
+          {/* MAIN VIEW CONTAINER */}
+          <main id="main-dashboard-scroll" className="flex-1 p-3.5 sm:p-6 md:p-8 overflow-y-auto pb-8">
               <div className="max-w-6xl w-full mx-auto space-y-4 sm:space-y-6">
                 
                 {/* CALM VIEW HEADER */}
@@ -1250,14 +1052,14 @@ export default function App() {
                       />
                     )}
 
-                    {/* {activeTab === "sheets" && (
+                    {activeTab === "sheets" && (
                       <SheetsManager 
                         token={token} 
                         files={files} 
                         onRefreshDrive={handleManualRefresh} 
                         addLog={addLog}
                       />
-                    )} */}
+                    )}
 
                     {activeTab === "organizer" && (
                       <SmartOrganizer 
@@ -1272,7 +1074,7 @@ export default function App() {
                       />
                     )}
 
-                    {/* {activeTab === "backup" && (
+                    {activeTab === "backup" && (
                       <BackupManager 
                         token={token} 
                         files={files} 
@@ -1283,9 +1085,9 @@ export default function App() {
                         backupHistory={backupHistory}
                         setBackupHistory={setBackupHistory}
                       />
-                    )} */}
+                    )}
 
-                    {/* {activeTab === "tasks" && (
+                    {activeTab === "tasks" && (
                       <TaskManager 
                         token={token} 
                         addLog={addLog} 
@@ -1299,7 +1101,7 @@ export default function App() {
                         onExecuteReminderAction={handleExecuteReminderAction}
                         onEmailApprovalRequest={(req) => setPendingEmailApproval(req)}
                       />
-                    )} */}
+                    )}
 
                     {activeTab === "reports" && (
                       <Dashboard 
@@ -1309,164 +1111,18 @@ export default function App() {
                       />
                     )}
 
-                    {/* {activeTab === "chat" && (
+                    {activeTab === "chat" && (
                       <GeminiChatbot 
                         files={files}
                         clearTrigger={chatClearTrigger}
                         exportTrigger={chatExportTrigger}
                       />
-                    )} */}
+                    )}
                   </motion.div>
                 </AnimatePresence>
 
               </div>
             </main>
-
-            {/* MOBILE BOTTOM NAVIGATION BAR (PHONE APP FRIENDLY VERSION) */}
-            <nav 
-              aria-label="Mobile app navigation"
-              className="fixed bottom-0 left-0 right-0 z-40 md:hidden bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-t border-slate-200/80 dark:border-slate-800/80 px-2 py-1.5 flex items-center justify-around shadow-lg"
-            >
-              <button
-                type="button"
-                id="mobile-nav-drive"
-                onClick={() => { setActiveTab("drive"); setIsMobileMoreOpen(false); }}
-                className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
-                  activeTab === "drive"
-                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
-                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
-                }`}
-              >
-                <Folder className="h-5 w-5" />
-                <span className="text-[10px] mt-0.5">Drive</span>
-              </button>
-
-              <button
-                type="button"
-                id="mobile-nav-organizer"
-                onClick={() => { setActiveTab("organizer"); setIsMobileMoreOpen(false); }}
-                className={`relative flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
-                  activeTab === "organizer"
-                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
-                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
-                }`}
-              >
-                <FolderKanban className="h-5 w-5" />
-                <span className="text-[10px] mt-0.5">Organize</span>
-                {Object.keys(filesInPlan).length > 0 && (
-                  <span className="absolute top-1 right-3 h-2 w-2 rounded-full bg-indigo-600 dark:bg-indigo-400 ring-2 ring-white dark:ring-slate-900" />
-                )}
-              </button>
-
-              <button
-                type="button"
-                id="mobile-nav-reports"
-                onClick={() => { setActiveTab("reports"); setIsMobileMoreOpen(false); }}
-                className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-colors cursor-pointer ${
-                  activeTab === "reports"
-                    ? "text-indigo-600 dark:text-indigo-400 font-semibold"
-                    : "text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200"
-                }`}
-              >
-                <BarChart3 className="h-5 w-5" />
-                <span className="text-[10px] mt-0.5">Reports</span>
-              </button>
-            </nav>
-
-            {/* Mobile "More" Drawer / Sheet */}
-            <AnimatePresence>
-              {isMobileMoreOpen && (
-                <>
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    onClick={() => setIsMobileMoreOpen(false)}
-                    className="fixed inset-0 z-40 bg-slate-950/40 backdrop-blur-xs md:hidden"
-                  />
-                  <motion.div
-                    initial={{ y: "100%" }}
-                    animate={{ y: 0 }}
-                    exit={{ y: "100%" }}
-                    transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-                    className="fixed bottom-14 left-0 right-0 z-50 md:hidden bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 rounded-t-2xl p-4 shadow-2xl space-y-2"
-                  >
-                    <div className="w-10 h-1 bg-slate-200 dark:bg-slate-700 rounded-full mx-auto mb-2" />
-                    <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider px-2 pb-1">
-                      Additional Workspaces
-                    </p>
-
-                    <button
-                      type="button"
-                      id="mobile-more-sheets"
-                      onClick={() => { setActiveTab("sheets"); setIsMobileMoreOpen(false); }}
-                      className={`w-full flex items-center justify-between p-3 rounded-xl text-left text-xs font-medium transition cursor-pointer ${
-                        activeTab === "sheets" ? "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-semibold" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <FileSpreadsheet className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                        <span>Google Sheets</span>
-                      </div>
-                      <span className="text-[11px] font-mono text-slate-400">
-                        {files.filter(f => f.mimeType === "application/vnd.google-apps.spreadsheet" || f.name.endsWith(".csv")).length}
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      id="mobile-more-backup"
-                      onClick={() => { setActiveTab("backup"); setIsMobileMoreOpen(false); }}
-                      className={`w-full flex items-center justify-between p-3 rounded-xl text-left text-xs font-medium transition cursor-pointer ${
-                        activeTab === "backup" ? "bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-semibold" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <RefreshCw className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
-                        <span>Cloud Backups</span>
-                      </div>
-                      <span className="text-[11px] font-mono text-slate-400">{backupJobs.length}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      id="mobile-more-reports"
-                      onClick={() => { setActiveTab("reports"); setIsMobileMoreOpen(false); }}
-                      className={`w-full flex items-center justify-between p-3 rounded-xl text-left text-xs font-medium transition cursor-pointer ${
-                        activeTab === "reports" ? "bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-semibold" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <BarChart3 className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
-                        <span>Activity Reports</span>
-                      </div>
-                      <span className="text-[11px] font-mono text-slate-400">{activities.length}</span>
-                    </button>
-
-                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                      <button
-                        type="button"
-                        onClick={toggleTheme}
-                        className="flex items-center gap-2 p-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                      >
-                        {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                        <span>{isDarkMode ? "Light Mode" : "Dark Mode"}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleLogout}
-                        className="flex items-center gap-1.5 p-2 text-xs text-rose-600 dark:text-rose-400 font-medium cursor-pointer"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        <span>Disconnect</span>
-                      </button>
-                    </div>
-                  </motion.div>
-                </>
-              )}
-            </AnimatePresence>
-          </div>
-
         </div>
       )}
 
