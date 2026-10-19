@@ -18,7 +18,9 @@ import {
   TriageResponsePayload,
   ComposeReportPayload,
   FileSummaryPayload,
-  ChatSuggestionsPayload
+  ChatSuggestionsPayload,
+  CONTENT_INTELLIGENCE_SYSTEM_PROMPT,
+  CONTENT_INTELLIGENCE_TOOLS
 } from "./src/lib/prompts";
 
 dotenv.config();
@@ -945,12 +947,20 @@ app.post("/api/gemini/chat", async (req, res) => {
       fallbackModels: [...fallbackModels, "gemini-flash-latest"],
       contents,
       config: {
-        systemInstruction: systemInstruction || "You are an intelligent, articulate assistant specialized in Google Drive, productivity workflows, cloud storage best practices, and automation. Provide clear, well-structured, actionable advice.",
+        systemInstruction: systemInstruction || CONTENT_INTELLIGENCE_SYSTEM_PROMPT,
+        ...(req.body?.enableTaxonomyTools ? { tools: [{ functionDeclarations: CONTENT_INTELLIGENCE_TOOLS }] } : {})
       }
     });
 
     const reply = (response.text || "") + (truncated ? "\n\n*[Note: Output reached the maximum token limit and was truncated.]*" : "");
-    return res.json({ success: true, reply, modelUsed, finishReason, truncated });
+    return res.json({
+      success: true,
+      reply,
+      functionCalls: response.functionCalls || undefined,
+      modelUsed,
+      finishReason,
+      truncated
+    });
   } catch (error: any) {
     const safeMsg = redactSecrets(error);
     console.warn("[Gemini Chat] Error processing chat message:", safeMsg);

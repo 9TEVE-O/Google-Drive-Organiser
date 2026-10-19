@@ -1,5 +1,5 @@
-import React from "react";
-import { ShieldCheck, Mail, AlertTriangle, Send, X, Clock, CheckCircle } from "lucide-react";
+import React, { useEffect, useMemo } from "react";
+import { ShieldCheck, Mail, Send, X, Layers } from "lucide-react";
 import { EmailApprovalRequest } from "../types";
 
 interface EmailApprovalModalProps {
@@ -7,18 +7,52 @@ interface EmailApprovalModalProps {
   onApprove: (request: EmailApprovalRequest) => void;
   onDecline: (request: EmailApprovalRequest) => void;
   isSending?: boolean;
+  pendingCount?: number;
 }
 
 export default function EmailApprovalModal({
   request,
   onApprove,
   onDecline,
-  isSending = false
+  isSending = false,
+  pendingCount = 1
 }: EmailApprovalModalProps) {
+  // Keyboard accessibility: dismiss/decline modal on Escape key press
+  useEffect(() => {
+    if (!request) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !isSending) {
+        onDecline(request);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [request, isSending, onDecline]);
+
+  // Decode entities and strip raw HTML safely for native text preview
+  const cleanPreviewText = useMemo(() => {
+    if (!request?.htmlBody) return "";
+    return request.htmlBody
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
+  }, [request?.htmlBody]);
+
   if (!request) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-xs">
+    <div 
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="email-approval-modal-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-xs"
+    >
       <div className="w-full max-w-xl max-h-[90vh] flex flex-col rounded-2xl border border-indigo-200 dark:border-indigo-900/60 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150">
         
         {/* HEADER */}
@@ -28,13 +62,19 @@ export default function EmailApprovalModal({
               <ShieldCheck className="h-5 w-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 id="email-approval-modal-title" className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                   Human Email Approval Required
                 </h3>
                 <span className="text-[10px] uppercase font-mono font-bold tracking-wider px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60">
                   Security Gate
                 </span>
+                {pendingCount > 1 && (
+                  <span className="text-[10px] font-mono font-medium px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 flex items-center gap-1">
+                    <Layers className="h-3 w-3" />
+                    <span>1 of {pendingCount} queued</span>
+                  </span>
+                )}
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 An automated action or reminder has prepared an outbound message. Review before sending.
@@ -44,6 +84,7 @@ export default function EmailApprovalModal({
           <button
             onClick={() => onDecline(request)}
             disabled={isSending}
+            aria-label="Decline and close"
             className="rounded-lg p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
           >
             <X className="h-4 w-4" />
@@ -81,9 +122,8 @@ export default function EmailApprovalModal({
               <span>HTML Message Content Preview</span>
               <span className="text-[10px] font-normal text-slate-400">Safe Native Rendering</span>
             </label>
-            {/* Replace dangerouslySetInnerHTML with a secure display box */}
             <div className="p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-700 text-xs leading-relaxed max-h-56 overflow-y-auto font-mono whitespace-pre-wrap">
-              {request.htmlBody.replace(/<[^>]*>?/gm, '')} {/* Strips raw HTML tags safely for preview */}
+              {cleanPreviewText}
             </div>
           </div>
 

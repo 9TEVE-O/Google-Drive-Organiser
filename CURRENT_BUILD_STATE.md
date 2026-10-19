@@ -30,6 +30,7 @@
 | **Firebase Admin Auth Boundary** | `VERIFIED` | Server-side Firebase ID token verification middleware on all `/api/gemini` routes | Express middleware checks Bearer token against Firebase Admin SDK, blocks unauthenticated callers with HTTP 401 |
 | **Google Docs API Integration** | `VERIFIED` | Google Docs v1 reading, text extraction, new doc creation, and batchUpdate text append (`GoogleDocViewerModal`) | Clean structural element parsing, interactive word/character counter, explicit human confirmation before mutating doc content |
 | **Google Picker Integration** | `VERIFIED` | Client-side Google Picker widget (`openGooglePicker`) with DocsView and DocsUploadView | Uses origin detection, oauth token integration, direct file selection with auto-triage and doc preview |
+| **Content Intelligence & Two-Phase Taxonomy Engine** | `VERIFIED` | Deep content ingestion (`inspectDriveFile`), folder hierarchy crawl (`listDriveStructure`), ≥0.85 folder reuse, Protected Directory guards, Phase 1 Staging Diff & Phase 2 Gated Commit (`commitStagedMoves`), `.drive_organiser_ledger.json` & atomic rollback (`rollbackLastTransaction`) | Extracts Entity, Doc Type, ISO Date, and Subject from opaque files (`Scan_042.pdf`, `Untitled.gdoc`), enforces fail-closed confirmation tokens, supports session path overrides and naming conventions |
 
 ---
 
@@ -50,7 +51,9 @@ The following change events trigger automatic invalidation of claims:
 ## 3. Active Foundation Validation Summary
 
 - **TypeScript Compilation**: Clean (`0` errors, `0` warnings) via `npm run lint`.
-- **Bundle Generation**: Production build verified via `npm run build` (`dist/server.cjs` and client bundles generated).
+- **Bundle Generation**: Production build verified via `npm run build` and `compile_applet`.
+- **Automated Test Suite**: PASS (`20` passing tests across 8 test suites, 0 failures) via `npm test`.
+- **Human Email Approval Gate**: Verified end-to-end; all outbound emails require interactive human approval notification and modal confirmation before Gmail dispatch.
 - **Frozen Surfaces Audit**:
   - `src/types.ts`: All canonical interfaces (`DriveFile`, `BackupJob`, `BackupLog`, `ActivityLog`, `TaskItem`, `OrganizerRule`, `GeminiChatModel`) strictly conform to contract.
   - `server.ts`: Canonical REST routes (`/api/health`, `/api/gemini/analyze`, `/api/gemini/organize-plan`, `/api/gemini/compose-report`, `/api/gemini/file-summary`, `/api/gemini/chat`) active with `generateContentWithResilience`.

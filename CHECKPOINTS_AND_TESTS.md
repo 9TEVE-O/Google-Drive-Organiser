@@ -44,6 +44,19 @@ This document records the verification protocols, automated checkpoints, test ve
   ```
 - **Status**: `VERIFIED`
 
+### Checkpoint D: Production Test Suite Verification
+- **Command**: `npm test` (`tsx --test src/lib/__tests__/production.test.ts`)
+- **Target**: 20 unit and integration test vectors across 8 test suites (Happy path, whitespace validation, streaming disconnects & malformed payloads, latency timeouts, Gemini response schemas, Firebase auth singleton, human email approval security gate, and Content Intelligence & Two-Phase Taxonomy Engine)
+- **Criterion**: All 20 tests pass, exit code 0.
+- **Evidence (2026-10-19T11:55:00Z)**:
+  ```
+  # tests 20
+  # suites 8
+  # pass 20
+  # fail 0
+  [PASSED] clean test execution, zero regressions
+  ```
+
 ---
 
 ## 2. Security & Threat Mitigation Checks
@@ -54,6 +67,7 @@ This document records the verification protocols, automated checkpoints, test ve
 | **SEC-CHK-02** | HTML Injection Protection | Inspect email generation in `src/components/TaskManager.tsx` | All raw user strings sanitized with `escapeHtml()` |
 | **SEC-CHK-03** | Server JSON Rate Limiting | Inspect `server.ts` middleware configuration | `express.json({ limit: "2mb" })` and sliding-window rate limiter active |
 | **SEC-CHK-04** | AI Prompt Untrusted Input Tagging | Inspect prompt generation in `server.ts` | All file names, user folders, and notes wrapped in `<untrusted_...>` tags |
+| **SEC-CHK-05** | Fail-Closed Staged Mutation & Protected Directories | Inspect `commitStagedMoves` in `src/lib/googleApi.ts` | Rejects unconfirmed mutations and blocks `/Archive`, `/Templates`, `/.drive_appdata` |
 
 ---
 
@@ -76,7 +90,7 @@ This document records the verification protocols, automated checkpoints, test ve
 - **Verification**: Native structured React preview renders recipient, subject, and cleanly escaped body without iframe or script vulnerabilities.
 
 ### Scenario 5: Multi-Role AI Assistant
-- **Actions**: Open Chat tab, switch role preset ("Executive Assistant", "Drive Clean-Up Specialist", "Data Analyst"), switch model to `gemini-3.1-pro-preview`, send prompt.
+- **Actions**: Open Chat tab, switch role preset ("Content Intelligence & Taxonomy Engine", "Quick Actions", "Governance Architect"), switch model to `gemini-3.1-pro-preview`, send prompt.
 - **Verification**: Streamed response received, chat history preserved with unique message keys, graceful error banner displayed if offline.
 
 ### Scenario 6: Generative Neural Drive Topology & AI-Native Aesthetic
@@ -103,3 +117,10 @@ This document records the verification protocols, automated checkpoints, test ve
   3. Action executes against Google Drive API (creates folder, appends note, or relocates file) and logs to system activity stream.
   4. Any outbound email immediately opens `EmailApprovalModal` requiring explicit user authorization.
   5. Clicking "Approve & Send" dispatches the email via Gmail API and logs success; clicking "Decline" keeps notification strictly in-app with zero outbound transmission.
+
+### Scenario 11: Content Intelligence & Fail-Closed Two-Phase Taxonomy Engine (VAL-TAX-01)
+- **Actions**: Run Phase 1 Content Inspection in Smart Organizer (`ContentIntelligencePanel`) or ask the AI Assistant (`GeminiChatbot`) to inspect/stage files, override a target path, confirm Phase 2 commit, and trigger Undo.
+- **Verification**:
+  1. Opaque files (`Scan_042.pdf`, `Untitled.gdoc`) are classified by sampled text into Entity (`ATO`, `Personal AI OS`), Document Type (`Tax Return`, `Specification`), ISO Date (`2025-07-14`, `2025-08-20`), and Core Subject.
+  2. Existing folders with semantic match `>= 0.85` (`/Financial/Taxes/2025`) are reused; new folders are only proposed below `0.85`; protected folders (`/Archive`, `/Templates`, `/.drive_appdata`) are never mutated.
+  3. Phase 2 commit requires a valid `confirmation_token`, appends every move to `.drive_organiser_ledger.json`, and `rollbackLastTransaction` atomically restores files to `original_parent_id`.

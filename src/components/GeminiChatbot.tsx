@@ -21,7 +21,29 @@ import {
   ArrowRight,
   ChevronDown
 } from "lucide-react";
-import { ChatMessage, GeminiChatModel, ChatRolePreset, DriveFile } from "../types";
+import {
+  ChatMessage,
+  GeminiChatModel,
+  ChatRolePreset,
+  DriveFile,
+  StagingDiffRow,
+  TaxonomyCustomisationConfig,
+  DriveFolderNode
+} from "../types";
+import { CONTENT_INTELLIGENCE_SYSTEM_PROMPT } from "../lib/prompts";
+import {
+  DEFAULT_TAXONOMY_CONFIG,
+  buildStagingDiff,
+  formatStagingDiffMarkdownTable,
+  isProtectedDirectory
+} from "../lib/decisionEngine";
+import {
+  listDriveStructure,
+  commitStagedMoves,
+  rollbackLastTransaction,
+  generateConfirmationToken,
+  getAccessToken
+} from "../lib/googleApi";
 
 export interface GeminiChatbotProps {
   files?: DriveFile[];
@@ -29,14 +51,62 @@ export interface GeminiChatbotProps {
   exportTrigger?: number;
 }
 
+const CHAT_FALLBACK_FILES: DriveFile[] = [
+  {
+    id: "file_scan_042",
+    name: "Scan_042.pdf",
+    mimeType: "application/pdf",
+    parents: ["root"],
+    modifiedTime: "2025-07-15T09:30:00Z",
+    content:
+      "Australian Taxation Office (ATO) — FY25 Notice of Assessment. Date: 2025-07-14. Subject: FY25 Notice of Assessment."
+  },
+  {
+    id: "file_untitled_gdoc",
+    name: "Untitled.gdoc",
+    mimeType: "application/vnd.google-apps.document",
+    parents: ["folder_drafts"],
+    modifiedTime: "2025-08-20T14:15:00Z",
+    content:
+      "Vendor: Architecture Spec\nTitle: Personal AI OS\nDate: 2025-08-20\nSubject: Personal AI OS."
+  }
+];
+
+const CHAT_FALLBACK_FOLDERS: DriveFolderNode[] = [
+  {
+    id: "folder_fin_taxes_2025",
+    name: "2025",
+    path: "/Financial/Taxes/2025",
+    parentId: "folder_fin_taxes",
+    depth: 3,
+    isProtected: false
+  },
+  {
+    id: "folder_drafts",
+    name: "Drafts",
+    path: "/Drafts",
+    parentId: "root",
+    depth: 1,
+    isProtected: false
+  },
+  {
+    id: "folder_archive_prot",
+    name: "Archive",
+    path: "/Archive",
+    parentId: "root",
+    depth: 1,
+    isProtected: true
+  }
+];
+
 const ROLE_PRESETS: ChatRolePreset[] = [
   {
     id: "drive_expert",
-    title: "Storage Specialist",
-    description: "Folder taxonomy, file naming rules, clean storage hygiene, and deduplication.",
+    title: "Content Intelligence & Taxonomy Engine",
+    description: "Deep content inspection, ≥0.85 folder reuse, two-phase staging diff, and ledger rollback.",
     iconName: "FolderTree",
     defaultModel: "gemini-3.8-flash",
-    systemInstruction: "You are an elite Google Drive organization and cloud storage specialist. You help users structure nested folder hierarchies, design foolproof file naming schemas (dates, project tags, revisions), identify archiving candidates, and maintain pristine digital storage hygiene. Be direct, well-organized, and provide bulleted solutions."
+    systemInstruction: CONTENT_INTELLIGENCE_SYSTEM_PROMPT
   },
   {
     id: "fast_assistant",
@@ -65,10 +135,10 @@ const ROLE_PRESETS: ChatRolePreset[] = [
 ];
 
 const DEFAULT_STARTERS = [
-  "How should I structure folders for personal taxes and invoices?",
-  "Recommend a standard file naming convention for client projects",
-  "What is the best weekly checklist to prevent Google Drive clutter?",
-  "Turn my pending tax invoices and contracts into an actionable task sprint"
+  "Inspect my Drive files and generate a Phase 1 Staging Diff",
+  "Confirm",
+  "Undo last batch from .drive_organiser_ledger.json",
+  "Route ATO files to /Financial/Taxes/2025"
 ];
 
 export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: GeminiChatbotProps = {}) {
@@ -76,7 +146,8 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
     {
       id: "initial-msg",
       role: "model",
-      content: "Hello! I am your AI Drive Companion. Ask me how to structure your folders, audit files, establish naming rules, or extract action items.",
+      content:
+        "I am the Google Drive Content Intelligence and Taxonomy Engine. Ask me to **organise** or **stage** your files to inspect their true contents and preview a read-only Phase 1 Staging Diff before any move is committed.",
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       modelUsed: "gemini-3.8-flash"
     }
@@ -88,6 +159,10 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
   const [customInstruction, setCustomInstruction] = useState(ROLE_PRESETS[0].systemInstruction);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+
+  // Two-Phase Staging & Session Customisation State inside Chat
+  const [stagedDiff, setStagedDiff] = useState<StagingDiffRow[]>([]);
+  const [sessionConfig, setSessionConfig] = useState<TaxonomyCustomisationConfig>(DEFAULT_TAXONOMY_CONFIG);
 
   // Compressed Options Menu & Drawer
   const [showOptionsMenu, setShowOptionsMenu] = useState(false);
@@ -162,6 +237,191 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
     setIsLoading(true);
 
     try {
+      const normalized = text.toLowerCase().trim();
+      const token = await getAccessToken();
+      const activeFiles = files && files.length > 0 ? files : CHAT_FALLBACK_FILES;
+
+      // 1. Check for Phase 2 Commit command ("Confirm", "Looks good", "Proceed")
+      if (/^(confirm|looks good|proceed|approve|yes,?\s*confirm)$/i.test(normalized)) {
+        if (stagedDiff.length === 0) {
+          const noStagedReply: ChatMessage = {
+            id: `model-${Date.now()}`,
+            role: "model",
+            content:
+              "Fail-closed guard: There is no active Phase 1 Staging Diff awaiting confirmation. Ask me to **Inspect and stage my Drive files** first so you can review the proposed moves before committing.",
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            modelUsed: selectedModel
+          };
+          setMessages(prev => [...prev, noStagedReply]);
+          setChatAsyncStatus("success");
+          return;
+        }
+
+        const eligibleMoves = stagedDiff
+          .filter(r => r.selected !== false && r.matchType !== "Protected (Skipped)")
+          .map(r => ({
+            file_id: r.fileId,
+            from_folder_id: r.currentFolderId || "root",
+            to_folder_id: r.proposedTargetFolderId || r.proposedTargetFolder,
+            rename_to: r.proposedName,
+            to_folder_path: r.proposedTargetFolder,
+            from_folder_path: r.currentFolder,
+            original_name: r.fileName
+          }));
+
+        const confirmationToken = generateConfirmationToken(eligibleMoves.length);
+        const commitResult = await commitStagedMoves(
+          token,
+          confirmationToken,
+          eligibleMoves,
+          activeFiles,
+          sessionConfig.protectedPaths
+        );
+
+        setStagedDiff([]);
+        const ledgerLines = commitResult.entries.map(
+          e =>
+            `- **${e.original_name}** → \`${e.destination_folder_path}/${e.applied_name}\` (tx: \`${e.transaction_id}\`, from: \`${e.original_parent_id}\` → to: \`${e.destination_parent_id}\`)`
+        );
+
+        const commitReply: ChatMessage = {
+          id: `model-${Date.now()}`,
+          role: "model",
+          content: [
+            `### Phase 2 Commit Executed (\`commit_staged_moves\`)`,
+            `Batch Transaction ID: \`${commitResult.transactionId}\``,
+            `Confirmation Token Verified: \`${confirmationToken}\``,
+            "",
+            ...ledgerLines,
+            "",
+            `All ${commitResult.entries.length} move(s) have been appended to \`.drive_organiser_ledger.json\`. Reply **Undo** or **Revert last batch** at any time to roll back.`
+          ].join("\n"),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          modelUsed: selectedModel
+        };
+        setMessages(prev => [...prev, commitReply]);
+        setChatAsyncStatus("success");
+        return;
+      }
+
+      // 2. Check for Atomic Rollback & Undo ("Undo", "Revert last batch", "Step back")
+      if (/\b(undo|revert last batch|step back|rollback)\b/i.test(normalized)) {
+        try {
+          const rollbackRes = await rollbackLastTransaction(token, activeFiles);
+          const restoredLines = rollbackRes.restoredFiles.map(
+            f => `- **${f.fileName}** restored to \`${f.restoredFolderPath}\` (parent ID: \`${f.restoredParentId}\`)`
+          );
+          const undoReply: ChatMessage = {
+            id: `model-${Date.now()}`,
+            role: "model",
+            content: [
+              `### Atomic Rollback Complete`,
+              `Reverted Transaction Batch: \`${rollbackRes.transactionId}\` from \`.drive_organiser_ledger.json\``,
+              "",
+              ...restoredLines
+            ].join("\n"),
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            modelUsed: selectedModel
+          };
+          setMessages(prev => [...prev, undoReply]);
+          setChatAsyncStatus("success");
+          return;
+        } catch (undoErr: any) {
+          const undoEmptyReply: ChatMessage = {
+            id: `model-${Date.now()}`,
+            role: "model",
+            content: `No active transactions found in \`.drive_organiser_ledger.json\` to revert (${undoErr?.message || "Ledger empty"}).`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            modelUsed: selectedModel
+          };
+          setMessages(prev => [...prev, undoEmptyReply]);
+          setChatAsyncStatus("success");
+          return;
+        }
+      }
+
+      // 3. Check for Interactive Path Correction (e.g., "Route ATO files to /Financial/Taxes/2025" or "Adjust Scan_042.pdf to /Taxes")
+      const overrideMatch = text.match(
+        /(?:route|move|adjust|send|put)\s+([A-Za-z0-9_.\-\s]+?)\s+(?:files\s+)?(?:to|into)\s+(\/[A-Za-z0-9_.\-\/]+)/i
+      );
+      if (overrideMatch) {
+        const targetEntityOrFile = overrideMatch[1].trim().toLowerCase();
+        const targetFolderPath = overrideMatch[2].trim();
+
+        if (isProtectedDirectory(targetFolderPath, sessionConfig.protectedPaths)) {
+          const protReply: ChatMessage = {
+            id: `model-${Date.now()}`,
+            role: "model",
+            content: `Protected Directory Guard: Cannot route files into or out of protected path \`${targetFolderPath}\` (Protected paths: \`${sessionConfig.protectedPaths.join("`, `")}\`).`,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            modelUsed: selectedModel
+          };
+          setMessages(prev => [...prev, protReply]);
+          setChatAsyncStatus("success");
+          return;
+        }
+
+        const nextConfig: TaxonomyCustomisationConfig = {
+          ...sessionConfig,
+          sessionOverrides: {
+            ...sessionConfig.sessionOverrides,
+            [targetEntityOrFile]: targetFolderPath
+          }
+        };
+        setSessionConfig(nextConfig);
+
+        const folders = await listDriveStructure(token, "root", nextConfig.maxFolderDepth, activeFiles);
+        const effectiveFolders = folders.length > 0 ? folders : CHAT_FALLBACK_FOLDERS;
+        const updatedRows = buildStagingDiff(activeFiles, effectiveFolders, nextConfig);
+        setStagedDiff(updatedRows);
+
+        const overrideReply: ChatMessage = {
+          id: `model-${Date.now()}`,
+          role: "model",
+          content: [
+            `Session rule recorded: All **${overrideMatch[1].trim()}** files in this session will route to \`${targetFolderPath}\`.`,
+            "",
+            "### Updated Phase 1: Staging Diff (Read-Only)",
+            formatStagingDiffMarkdownTable(updatedRows)
+          ].join("\n"),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          modelUsed: selectedModel
+        };
+        setMessages(prev => [...prev, overrideReply]);
+        setChatAsyncStatus("success");
+        return;
+      }
+
+      // 4. Check for Phase 1 Staging Diff Request ("organise", "organize", "stage", "inspect", "diff")
+      if (/\b(organise|organize|stage|staging|inspect|diff|classify)\b/i.test(normalized)) {
+        const crawledFolders = await listDriveStructure(
+          token,
+          "root",
+          sessionConfig.maxFolderDepth,
+          activeFiles
+        );
+        const effectiveFolders = crawledFolders.length > 0 ? crawledFolders : CHAT_FALLBACK_FOLDERS;
+        const rows = buildStagingDiff(activeFiles, effectiveFolders, sessionConfig);
+        setStagedDiff(rows);
+
+        const stageReply: ChatMessage = {
+          id: `model-${Date.now()}`,
+          role: "model",
+          content: [
+            `### Phase 1: Staging Diff (Read-Only)`,
+            `Inspected ${rows.length} file(s) via deep content extraction (\`list_drive_structure\` + \`inspect_drive_file\`, reuse threshold ≥ ${Math.round(sessionConfig.reuseThreshold * 100)}%):`,
+            "",
+            formatStagingDiffMarkdownTable(rows)
+          ].join("\n"),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          modelUsed: selectedModel
+        };
+        setMessages(prev => [...prev, stageReply]);
+        setChatAsyncStatus("success");
+        return;
+      }
+
+      // 5. Standard Conversational AI request via server
       let data: any = null;
       let statusDetail = "";
       try {
@@ -208,7 +468,7 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
       setIsLoading(false);
       setTimeout(() => inputRef.current?.focus(), 100);
     }
-  }, [inputText, isLoading, messages, customInstruction, selectedModel]);
+  }, [inputText, isLoading, messages, customInstruction, selectedModel, files, stagedDiff, sessionConfig]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { User } from "firebase/auth";
 import { 
   initAuth, googleSignIn, logout, listDriveFiles, isPopupDismissedError, uploadDriveBlob,
@@ -116,6 +116,12 @@ export default function App() {
       createdAt: new Date().toISOString()
     }
   ]);
+
+  // Ref tracking current reminders state for thread-safe background interval evaluations
+  const remindersRef = useRef<SmartTaskReminder[]>(reminders);
+  useEffect(() => {
+    remindersRef.current = reminders;
+  }, [reminders]);
 
   // Modal and Approval states
   const [isScheduleReminderModalOpen, setIsScheduleReminderModalOpen] = useState(false);
@@ -727,8 +733,8 @@ export default function App() {
       await sendGmailReport(token, req.recipientEmail, req.subject, req.htmlBody);
       addLog("email", `Human approved email delivered to ${req.recipientEmail}`, `Subject: ${req.subject}`);
       triggerNotification("Email Delivered", `Successfully sent to ${req.recipientEmail}`);
-      // H-01: Remove head of queue
-      setPendingEmailApprovals(prev => prev.slice(1));
+      // H-01: Remove approved item from queue by exact ID
+      setPendingEmailApprovals(prev => prev.filter(item => item.id !== req.id));
       setWorkspaceAsyncState({
         status: "success",
         message: `Approved email "${req.subject}" delivered to ${req.recipientEmail}.`,
@@ -751,7 +757,8 @@ export default function App() {
   const handleDeclineEmail = (req: EmailApprovalRequest) => {
     addLog("email", `Email delivery declined by user: "${req.subject}"`, "Notification kept in-app only.");
     triggerNotification("Email Delivery Cancelled", "The notification was kept in-app only.");
-    setPendingEmailApprovals(prev => prev.slice(1));
+    // Remove declined item from queue by exact ID
+    setPendingEmailApprovals(prev => prev.filter(item => item.id !== req.id));
   };
 
   // C-03: Background Smart Reminder & Scheduled Action Evaluation Engine (Pure refactor)
@@ -761,37 +768,38 @@ export default function App() {
       const currentDateStr = now.toISOString().slice(0, 10);
       const currentHourMin = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-      // 1. Identify due reminders outside of state updater to prevent duplicate side-effects
-      const dueReminders: SmartTaskReminder[] = [];
-      setReminders(prev => {
-        const updatedReminders = prev.map(rem => {
-          const isDateDue = !rem.triggerDate || rem.triggerDate <= currentDateStr;
-          const isTimeDue = rem.triggerTime === currentHourMin || (rem.triggerDate ? rem.triggerDate < currentDateStr : false);
-          
-          if (rem.status === 'active' && !rem.notified && isDateDue && isTimeDue) {
-            dueReminders.push(rem);
-            
-            // Advance recurrence or mark fired
-            if (rem.recurrence === 'daily') {
-              const nextD = new Date(now.getTime() + 86400000);
-              return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
-            } else if (rem.recurrence === 'weekly') {
-              const nextD = new Date(now.getTime() + 7 * 86400000);
-              return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
-            } else if (rem.recurrence === 'monthly') {
-              const nextD = new Date(now);
-              nextD.setMonth(nextD.getMonth() + 1);
-              return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
-            } else {
-              return { ...rem, status: 'fired', notified: true, executed: true, lastFiredAt: now.toISOString() };
-            }
-          }
-          return rem;
-        });
-        return updatedReminders;
+      // 1. Identify due reminders using current ref snapshot to prevent duplicate side-effects
+      const currentReminders = remindersRef.current;
+      const dueReminders = currentReminders.filter(rem => {
+        const isDateDue = !rem.triggerDate || rem.triggerDate <= currentDateStr;
+        const isTimeDue = rem.triggerTime === currentHourMin || (rem.triggerDate ? rem.triggerDate < currentDateStr : false);
+        return rem.status === 'active' && !rem.notified && isDateDue && isTimeDue;
       });
 
-      // 2. Dispatch side effects for identified due reminders
+      if (dueReminders.length === 0) return;
+
+      // 2. Purely transition reminder state for due items
+      setReminders(prev => prev.map(rem => {
+        const isDue = dueReminders.some(d => d.id === rem.id);
+        if (!isDue) return rem;
+
+        // Advance recurrence or mark fired
+        if (rem.recurrence === 'daily') {
+          const nextD = new Date(now.getTime() + 86400000);
+          return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
+        } else if (rem.recurrence === 'weekly') {
+          const nextD = new Date(now.getTime() + 7 * 86400000);
+          return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
+        } else if (rem.recurrence === 'monthly') {
+          const nextD = new Date(now);
+          nextD.setMonth(nextD.getMonth() + 1);
+          return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
+        } else {
+          return { ...rem, status: 'fired', notified: true, executed: true, lastFiredAt: now.toISOString() };
+        }
+      }));
+
+      // 3. Dispatch side effects for identified due reminders
       dueReminders.forEach(rem => {
         if (rem.notifyInApp) {
           triggerNotification(`Scheduled Task Due: ${rem.title}`, rem.description || `Scheduled alert triggered at ${rem.triggerTime}`);
@@ -1271,6 +1279,7 @@ export default function App() {
         onApprove={handleApproveEmail}
         onDecline={handleDeclineEmail}
         isSending={isSendingApprovedEmail}
+        pendingCount={pendingEmailApprovals.length}
       />
     </div>
   );

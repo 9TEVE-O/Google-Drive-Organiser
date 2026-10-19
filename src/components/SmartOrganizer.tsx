@@ -17,6 +17,7 @@ import {
 } from "../types";
 import InfoTooltip from "./InfoTooltip";
 import OrganizerRulesSettings, { DEFAULT_ORGANIZER_RULES } from "./OrganizerRulesSettings";
+import ContentIntelligencePanel from "./ContentIntelligencePanel";
 
 interface SmartOrganizerProps {
   token: string | null;
@@ -1192,22 +1193,34 @@ export default function SmartOrganizer({
     }
   };
 
-  // Immediate Single-Click trigger: generates layout plan if needed, then immediately executes moves
+  // Two-Phase Fail-Closed Trigger: Stages diff first if none is active; only commits if user has already staged & reviewed
   const handleOneClickMove = async () => {
     if (triagePlan) {
       await handleExecuteApprovedMoves();
     } else if (orgPlan) {
       await handleExecutePlanAction(orgPlan);
     } else {
-      const generated = await handleGenerateSortPlan();
-      if (generated) {
-        await handleExecutePlanAction(generated);
-      }
+      await handleGenerateSortPlan();
+      setOrganizerAsyncState({
+        status: "success",
+        message: "Phase 1 Staging Diff ready. Review the proposed moves below and click Confirm to execute.",
+        retryFn: null
+      });
     }
   };
 
   return (
     <div className="space-y-6">
+      {/* Content Intelligence & Two-Phase Taxonomy Engine */}
+      <ContentIntelligencePanel
+        token={token}
+        files={files}
+        rules={rules}
+        onRefresh={onRefresh}
+        setFiles={setFiles}
+        addLog={addLog}
+      />
+
       {/* Header Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>

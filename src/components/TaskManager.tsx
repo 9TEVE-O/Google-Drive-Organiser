@@ -311,7 +311,7 @@ export default function TaskManager({
       executed: false,
       createdAt: new Date().toISOString()
     };
-    setReminders([item, ...reminders]);
+    setReminders(prev => [item, ...prev]);
     addLog("task", `Scheduled alarm reminder: "${newReminderTitle}"`, `Alarm Time: ${newReminderTime}`);
     onTriggerNotification("Reminder Created", `"${newReminderTitle}" set for ${newReminderTime}`);
     setNewReminderTitle("");
@@ -320,7 +320,7 @@ export default function TaskManager({
 
   // Remove alert job
   const handleRemoveReminder = (id: string) => {
-    setReminders(reminders.filter(r => r.id !== id));
+    setReminders(prev => prev.filter(r => r.id !== id));
   };
 
   // Create Beautiful Custom report using Gemini Server route

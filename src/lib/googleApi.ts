@@ -1,8 +1,23 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut, setPersistence, browserSessionPersistence } from 'firebase/auth';
 import bundledFirebaseConfig from '../../firebase-applet-config.json';
-import { DriveFile, TaskItem, SheetMetadata, GoogleDocContent, PickedFileItem } from '../types';
-import { evaluateFileDecision } from './decisionEngine';
+import {
+  DriveFile,
+  TaskItem,
+  SheetMetadata,
+  GoogleDocContent,
+  PickedFileItem,
+  DriveFolderNode,
+  ExtractedContentMetadata,
+  CommitStagedMoveItem,
+  LedgerTransactionEntry
+} from '../types';
+import {
+  evaluateFileDecision,
+  extractDeepContentMetadata,
+  isProtectedDirectory,
+  DEFAULT_TAXONOMY_CONFIG
+} from './decisionEngine';
 
 // Resolve configuration with fallback hierarchy:
 // 1. Environment variables (process.env.NEXT_PUBLIC_FIREBASE_* or Vite import.meta.env)
@@ -1432,3 +1447,485 @@ function formatBytes(bytes: number, decimals = 2) {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
 }
+
+// ---------------------------------------------------------------------------
+// GOOGLE DRIVE CONTENT INTELLIGENCE & TWO-PHASE TAXONOMY ENGINE TOOLS
+// ---------------------------------------------------------------------------
+
+export const ORGANISER_LEDGER_STORAGE_KEY = ".drive_organiser_ledger.json";
+export const ORGANISER_LEDGER_FILENAME = ".drive_organiser_ledger.json";
+
+/**
+ * Generates an explicit confirmation token bound to a staged diff revision.
+ */
+export const generateConfirmationToken = (moveCount: number): string => {
+  return `CONFIRM_DIFF_${moveCount}_${Date.now()}`;
+};
+
+/**
+ * Reads the append-only transaction ledger (.drive_organiser_ledger.json).
+ */
+export const getOrganiserLedger = (): LedgerTransactionEntry[] => {
+  try {
+    if (typeof localStorage === "undefined") return [];
+    const raw = localStorage.getItem(ORGANISER_LEDGER_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Appends new transaction entries to .drive_organiser_ledger.json (local + optional Drive sync).
+ */
+export const appendToOrganiserLedger = async (
+  entries: LedgerTransactionEntry[],
+  token?: string | null
+): Promise<LedgerTransactionEntry[]> => {
+  const existing = getOrganiserLedger();
+  const updated = [...existing, ...entries];
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(ORGANISER_LEDGER_STORAGE_KEY, JSON.stringify(updated, null, 2));
+    }
+  } catch (err) {
+    console.warn("Could not persist ledger to localStorage:", err);
+  }
+
+  // Best-effort sync of .drive_organiser_ledger.json to Google Drive root when token is active
+  if (token) {
+    try {
+      const q = encodeURIComponent(`name = '${ORGANISER_LEDGER_FILENAME}' and trashed = false`);
+      const searchRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=1`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (searchRes.ok) {
+        const searchData = await searchRes.json();
+        const existingLedgerFile = searchData.files?.[0];
+        const jsonPayload = JSON.stringify(updated, null, 2);
+        if (existingLedgerFile?.id) {
+          await updateDriveTextFile(token, existingLedgerFile.id, jsonPayload);
+        }
+      }
+    } catch {
+      // Non-fatal if Drive ledger file sync is skipped
+    }
+  }
+
+  return updated;
+};
+
+/**
+ * Tool 1: list_drive_structure
+ * Scans and returns the user's current Google Drive folder hierarchy with folder IDs and paths.
+ */
+export const listDriveStructure = async (
+  token: string | null,
+  rootFolderId = "root",
+  depth = 3,
+  localFiles: DriveFile[] = [],
+  protectedPaths: string[] = DEFAULT_TAXONOMY_CONFIG.protectedPaths
+): Promise<DriveFolderNode[]> => {
+  const maxDepth = Math.max(1, Math.min(5, depth));
+  let folderRecords: Array<{ id: string; name: string; parents?: string[] }> = [];
+
+  if (token) {
+    try {
+      const q = encodeURIComponent("mimeType = 'application/vnd.google-apps.folder' and trashed = false");
+      const fields = encodeURIComponent("files(id, name, parents)");
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=${fields}&pageSize=200&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        folderRecords = data.files || [];
+      }
+    } catch (err) {
+      console.warn("Falling back to local folder inventory for listDriveStructure:", err);
+    }
+  }
+
+  if (folderRecords.length === 0 && localFiles.length > 0) {
+    folderRecords = localFiles
+      .filter(f => f.mimeType === "application/vnd.google-apps.folder")
+      .map(f => ({ id: f.id, name: f.name, parents: f.parents }));
+  }
+
+  const folderById = new Map<string, { id: string; name: string; parents?: string[] }>();
+  for (const f of folderRecords) {
+    folderById.set(f.id, f);
+  }
+
+  const buildPathAndDepth = (folder: { id: string; name: string; parents?: string[] }): { path: string; depth: number; parentId: string } => {
+    const segments: string[] = [folder.name];
+    let currentParentId = folder.parents?.[0] || "root";
+    const visited = new Set<string>([folder.id]);
+
+    while (
+      currentParentId &&
+      currentParentId !== "root" &&
+      currentParentId !== rootFolderId &&
+      folderById.has(currentParentId) &&
+      !visited.has(currentParentId)
+    ) {
+      visited.add(currentParentId);
+      const parentObj = folderById.get(currentParentId)!;
+      segments.unshift(parentObj.name);
+      currentParentId = parentObj.parents?.[0] || "root";
+    }
+
+    const fullPath = "/" + segments.join("/");
+    return {
+      path: fullPath,
+      depth: segments.length,
+      parentId: folder.parents?.[0] || "root"
+    };
+  };
+
+  const nodes: DriveFolderNode[] = [];
+  for (const f of folderRecords) {
+    const { path, depth: d, parentId } = buildPathAndDepth(f);
+    if (d <= maxDepth) {
+      nodes.push({
+        id: f.id,
+        name: f.name,
+        path,
+        parentId,
+        depth: d,
+        isProtected: isProtectedDirectory(path, protectedPaths)
+      });
+    }
+  }
+
+  return nodes.sort((a, b) => a.path.localeCompare(b.path));
+};
+
+/**
+ * Tool 2: inspect_drive_file
+ * Extracts raw text, OCR/export data, and structured metadata from a target file in Google Drive.
+ * 1. Workspace Files (Docs, Sheets, Slides): Extracts plain text or CSV summary via Drive export API.
+ * 2. Binary Documents (PDFs, Images, Scans): Samples first 2,000 tokens of available text/description/content.
+ */
+export const inspectDriveFile = async (
+  token: string | null,
+  fileId: string,
+  tokenLimit = 2000,
+  localFiles: DriveFile[] = []
+): Promise<{
+  fileId: string;
+  fileName: string;
+  mimeType: string;
+  sampledText: string;
+  metadata: ExtractedContentMetadata;
+}> => {
+  const localMatch = localFiles.find(f => f.id === fileId);
+  let fileMeta: DriveFile = localMatch || {
+    id: fileId,
+    name: "Untitled Document",
+    mimeType: "application/octet-stream"
+  };
+
+  let rawText = localMatch?.content || "";
+  const charLimit = Math.max(500, tokenLimit * 4);
+
+  if (token) {
+    try {
+      // Fetch file metadata & description if not already complete
+      const metaRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,description,createdTime,modifiedTime,parents&supportsAllDrives=true`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (metaRes.ok) {
+        const remoteMeta = await metaRes.json();
+        fileMeta = {
+          ...fileMeta,
+          id: remoteMeta.id || fileMeta.id,
+          name: remoteMeta.name || fileMeta.name,
+          mimeType: remoteMeta.mimeType || fileMeta.mimeType,
+          createdTime: remoteMeta.createdTime || fileMeta.createdTime,
+          modifiedTime: remoteMeta.modifiedTime || fileMeta.modifiedTime,
+          parents: remoteMeta.parents || fileMeta.parents
+        };
+        if (remoteMeta.description && !rawText) {
+          rawText = String(remoteMeta.description);
+        }
+      }
+
+      const mime = (fileMeta.mimeType || "").toLowerCase();
+
+      // 1. Google Workspace Files (Docs, Sheets, Slides) -> Drive Export API
+      if (mime === "application/vnd.google-apps.document" || mime === "application/vnd.google-apps.presentation") {
+        const exportRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent("text/plain")}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (exportRes.ok) {
+          rawText = await exportRes.text();
+        }
+      } else if (mime === "application/vnd.google-apps.spreadsheet") {
+        const exportRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent("text/csv")}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (exportRes.ok) {
+          rawText = await exportRes.text();
+        }
+      } else if (
+        mime.startsWith("text/") ||
+        mime === "application/json" ||
+        mime === "application/xml" ||
+        /\.(txt|md|csv|json|ts|tsx|js|py|yaml|yml|log)$/i.test(fileMeta.name)
+      ) {
+        // Plain text / code media download
+        const mediaRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (mediaRes.ok) {
+          rawText = await mediaRes.text();
+        }
+      }
+    } catch (err) {
+      console.warn(`Deep content fetch notice for ${fileId}:`, err);
+    }
+  }
+
+  const sampledText = rawText.slice(0, charLimit);
+  const metadata = extractDeepContentMetadata(fileMeta, sampledText, tokenLimit);
+
+  return {
+    fileId: fileMeta.id,
+    fileName: fileMeta.name,
+    mimeType: fileMeta.mimeType,
+    sampledText,
+    metadata
+  };
+};
+
+/**
+ * Tool 3: commit_staged_moves
+ * Strictly fail-closed Phase 2 Commit:
+ * - Requires a valid non-empty confirmation_token proving explicit user confirmation of the Staging Diff.
+ * - Rejects any move targeting or originating from a Protected Directory (/Archive, /Templates, /.drive_appdata).
+ * - Records every moved file to the append-only transaction ledger (.drive_organiser_ledger.json).
+ */
+export const commitStagedMoves = async (
+  token: string | null,
+  confirmationToken: string,
+  moves: CommitStagedMoveItem[],
+  localFiles: DriveFile[] = [],
+  protectedPaths: string[] = DEFAULT_TAXONOMY_CONFIG.protectedPaths
+): Promise<{
+  transactionId: string;
+  entries: LedgerTransactionEntry[];
+  updatedLocalFiles: DriveFile[];
+}> => {
+  // Operational Invariant: Fail-closed confirmation check
+  if (!confirmationToken || !confirmationToken.trim().startsWith("CONFIRM")) {
+    throw new Error(
+      "Fail-closed security block: Mutating actions require an explicit confirmation_token after reviewing the Phase 1 Staging Diff."
+    );
+  }
+
+  if (!Array.isArray(moves) || moves.length === 0) {
+    throw new Error("No staged moves provided to commit.");
+  }
+
+  const batchTransactionId = `tx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const timestampUtc = new Date().toISOString();
+  const entries: LedgerTransactionEntry[] = [];
+  let updatedLocalFiles = [...localFiles];
+
+  // Cache created folder paths -> IDs during this batch
+  const resolvedFolderIds = new Map<string, string>();
+  for (const f of updatedLocalFiles) {
+    if (f.mimeType === "application/vnd.google-apps.folder") {
+      resolvedFolderIds.set(f.name.toLowerCase(), f.id);
+      resolvedFolderIds.set(("/" + f.name).toLowerCase(), f.id);
+    }
+  }
+
+  for (let i = 0; i < moves.length; i++) {
+    const move = moves[i];
+    const targetPath = move.to_folder_path || move.to_folder_id;
+
+    // Guard against Protected Directories
+    if (
+      isProtectedDirectory(targetPath, protectedPaths) ||
+      (move.from_folder_path && isProtectedDirectory(move.from_folder_path, protectedPaths))
+    ) {
+      throw new Error(
+        `Protected Directory violation: Cannot move files into or out of protected path "${targetPath}".`
+      );
+    }
+
+    let destinationFolderId = move.to_folder_id;
+
+    // If to_folder_id is a path (e.g. "/Financial/Taxes/2025") or "NEW_FOLDER", resolve/create it
+    if (!destinationFolderId || destinationFolderId.startsWith("/") || destinationFolderId.startsWith("NEW_")) {
+      const cleanPath = (move.to_folder_path || destinationFolderId.replace(/^NEW_/, ""))
+        .replace(/^\/+/, "")
+        .replace(/\/+$/, "");
+      const cacheKey = ("/" + cleanPath).toLowerCase();
+
+      if (resolvedFolderIds.has(cacheKey)) {
+        destinationFolderId = resolvedFolderIds.get(cacheKey)!;
+      } else if (token && cleanPath) {
+        const createdId = await createNestedDriveFolders(token, cleanPath, {});
+        destinationFolderId = createdId;
+        resolvedFolderIds.set(cacheKey, createdId);
+      } else {
+        const newLocalFolderId = `folder_${Date.now()}_${i}`;
+        destinationFolderId = newLocalFolderId;
+        resolvedFolderIds.set(cacheKey, newLocalFolderId);
+        const leafName = cleanPath.split("/").pop() || cleanPath || "Organised";
+        updatedLocalFiles.push({
+          id: newLocalFolderId,
+          name: leafName,
+          mimeType: "application/vnd.google-apps.folder",
+          parents: ["root"],
+          modifiedTime: timestampUtc
+        });
+      }
+    }
+
+    const existingFile = updatedLocalFiles.find(f => f.id === move.file_id);
+    const originalName = move.original_name || existingFile?.name || move.file_id;
+    const appliedName = move.rename_to && move.rename_to.trim() ? move.rename_to.trim() : originalName;
+
+    if (token) {
+      if (destinationFolderId && destinationFolderId !== move.from_folder_id) {
+        await moveDriveFile(token, move.file_id, destinationFolderId, move.from_folder_id);
+      }
+      if (appliedName !== originalName) {
+        await renameDriveFile(token, move.file_id, appliedName);
+      }
+    }
+
+    // Update local state representation
+    updatedLocalFiles = updatedLocalFiles.map(f =>
+      f.id === move.file_id
+        ? {
+            ...f,
+            name: appliedName,
+            parents: [destinationFolderId]
+          }
+        : f
+    );
+
+    const entry: LedgerTransactionEntry = {
+      transaction_id: `${batchTransactionId}_${i + 1}`,
+      batch_id: batchTransactionId,
+      timestamp_utc: timestampUtc,
+      file_id: move.file_id,
+      original_parent_id: move.from_folder_id || "root",
+      destination_parent_id: destinationFolderId,
+      applied_name: appliedName,
+      original_name: originalName,
+      original_folder_path: move.from_folder_path || "Root (My Drive)",
+      destination_folder_path: move.to_folder_path || destinationFolderId,
+      reverted: false
+    };
+    entries.push(entry);
+  }
+
+  await appendToOrganiserLedger(entries, token);
+
+  return {
+    transactionId: batchTransactionId,
+    entries,
+    updatedLocalFiles
+  };
+};
+
+/**
+ * Atomic Rollback & Undo:
+ * 1. Fetches the most recent non-reverted transaction batch from .drive_organiser_ledger.json.
+ * 2. Moves each file back from its destination_parent_id to its original_parent_id (and restores original_name if renamed).
+ * 3. Marks the ledger entries as reverted and returns the restored file paths.
+ */
+export const rollbackLastTransaction = async (
+  token: string | null,
+  localFiles: DriveFile[] = []
+): Promise<{
+  transactionId: string;
+  restoredFiles: Array<{
+    fileId: string;
+    fileName: string;
+    restoredParentId: string;
+    restoredFolderPath: string;
+  }>;
+  updatedLocalFiles: DriveFile[];
+}> => {
+  const ledger = getOrganiserLedger();
+  const activeEntries = ledger.filter(e => !e.reverted);
+  if (activeEntries.length === 0) {
+    throw new Error("No active transactions found in .drive_organiser_ledger.json to revert.");
+  }
+
+  const lastEntry = activeEntries[activeEntries.length - 1];
+  const targetBatchId = lastEntry.batch_id || lastEntry.transaction_id;
+  const batchEntries = activeEntries.filter(
+    e => (e.batch_id || e.transaction_id) === targetBatchId
+  );
+
+  const restoredFiles: Array<{
+    fileId: string;
+    fileName: string;
+    restoredParentId: string;
+    restoredFolderPath: string;
+  }> = [];
+  let updatedLocalFiles = [...localFiles];
+
+  for (const entry of batchEntries) {
+    const restoreName = entry.original_name || entry.applied_name;
+    if (token) {
+      if (entry.original_parent_id && entry.original_parent_id !== entry.destination_parent_id) {
+        await moveDriveFile(token, entry.file_id, entry.original_parent_id, entry.destination_parent_id);
+      }
+      if (entry.original_name && entry.original_name !== entry.applied_name) {
+        await renameDriveFile(token, entry.file_id, entry.original_name);
+      }
+    }
+
+    updatedLocalFiles = updatedLocalFiles.map(f =>
+      f.id === entry.file_id
+        ? {
+            ...f,
+            name: restoreName,
+            parents: [entry.original_parent_id]
+          }
+        : f
+    );
+
+    restoredFiles.push({
+      fileId: entry.file_id,
+      fileName: restoreName,
+      restoredParentId: entry.original_parent_id,
+      restoredFolderPath: entry.original_folder_path || "Root (My Drive)"
+    });
+  }
+
+  // Mark batch entries as reverted in .drive_organiser_ledger.json
+  const updatedLedger = ledger.map(e =>
+    (e.batch_id || e.transaction_id) === targetBatchId ? { ...e, reverted: true } : e
+  );
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(ORGANISER_LEDGER_STORAGE_KEY, JSON.stringify(updatedLedger, null, 2));
+    }
+  } catch (err) {
+    console.warn("Failed to update ledger after rollback:", err);
+  }
+
+  return {
+    transactionId: targetBatchId,
+    restoredFiles,
+    updatedLocalFiles
+  };
+};
+

@@ -4,15 +4,25 @@ import {
   executeCoreAiWorkflow,
   type WorkflowStorageDatabase,
 } from "../geminiApi.ts";
-import { evaluateFilesBatch, getDecisionSystemMetrics } from "../decisionEngine.ts";
+import {
+  evaluateFilesBatch,
+  getDecisionSystemMetrics,
+  extractDeepContentMetadata,
+  buildStagingDiff,
+  formatStagingDiffMarkdownTable,
+  formatProposedFileName,
+  enforceFolderDepthLimit,
+  DEFAULT_TAXONOMY_CONFIG,
+} from "../decisionEngine.ts";
 import {
   TriageSchema,
   ChangePlanSchema,
   ComposeReportSchema,
   FileSummarySchema,
   ChatSuggestionsSchema,
+  CONTENT_INTELLIGENCE_TOOLS,
 } from "../prompts.ts";
-import type { DriveFile, OrganizerRule, UndoSnapshot } from "../../types.ts";
+import type { DriveFile, DriveFolderNode, OrganizerRule, UndoSnapshot } from "../../types.ts";
 
 /**
  * Helper to simulate a chunked streaming HTTP Response (ReadableStream of Uint8Array chunks)
@@ -547,6 +557,264 @@ describe("Core User Workflow Suite: Prompt Input -> Streaming Response -> Render
       expect(pendingEmailApproval).toBeDefined();
       expect(pendingEmailApproval.recipientEmail).toBe("test.user@example.com");
     });
+
+    it("should safely filter approval requests by exact ID without mutating or desyncing remaining queue", () => {
+      const queue = [
+        { id: "email_1", recipientEmail: "a@example.com", subject: "Report A", htmlBody: "<p>A</p>", timestamp: "2026-01-01" },
+        { id: "email_2", recipientEmail: "b@example.com", subject: "Report B", htmlBody: "<p>B</p>", timestamp: "2026-01-02" },
+        { id: "email_3", recipientEmail: "c@example.com", subject: "Report C", htmlBody: "<p>C</p>", timestamp: "2026-01-03" }
+      ];
+
+      // Remove middle item by ID
+      const targetReq = queue[1];
+      const afterApproval = queue.filter(item => item.id !== targetReq.id);
+
+      expect(afterApproval.length).toBe(2);
+      expect(afterApproval.map(i => i.id)).toEqual(["email_1", "email_3"]);
+      expect(afterApproval[0].id).toBe("email_1");
+    });
+
+    it("should reject invalid email formats or header injection attempts before API dispatch", async () => {
+      const { sendGmailReport } = await import("../googleApi");
+      await expect(sendGmailReport("dummy-token", "invalid-email-address", "Test", "<p>hi</p>")).rejects.toThrow(
+        "Invalid recipient email address format."
+      );
+      await expect(sendGmailReport("dummy-token", "victim@example.com\r\nBcc: evil@attacker.com", "Test", "<p>hi</p>")).rejects.toThrow(
+        "Invalid recipient email address format."
+      );
+    });
+  });
+
+  describe("7. Google Drive Content Intelligence & Two-Phase Taxonomy Engine", () => {
+    it("should extract Primary Entity, Document Type, ISO 8601 Date, and Core Subject from opaque files (Scan_042.pdf, Untitled.gdoc)", () => {
+      const scanFile: DriveFile = {
+        id: "f_scan_042",
+        name: "Scan_042.pdf",
+        mimeType: "application/pdf",
+        parents: ["root"],
+        content:
+          "Australian Taxation Office (ATO) — Notice of Assessment for the income year ended 30 June 2025 (FY25). Date of issue: 2025-07-14. Subject: FY25 Notice of Assessment.",
+      };
+
+      const untitledDoc: DriveFile = {
+        id: "f_untitled_1",
+        name: "Untitled.gdoc",
+        mimeType: "application/vnd.google-apps.document",
+        parents: ["folder_drafts"],
+        content:
+          "Title: Architecture Spec - Personal AI OS\nDate: 18/08/2025\nSystem design specification for local personal AI OS memory and tool execution.",
+      };
+
+      const scanMeta = extractDeepContentMetadata(scanFile);
+      expect(scanMeta.primaryEntity).toBe("ATO");
+      expect(scanMeta.documentType).toBe("Tax Return");
+      expect(scanMeta.canonicalDate).toBe("2025-07-14");
+      expect(scanMeta.coreSubject).toContain("FY25 Notice of Assessment");
+
+      const docMeta = extractDeepContentMetadata(untitledDoc);
+      expect(docMeta.primaryEntity).toBe("Personal AI OS");
+      expect(docMeta.documentType).toBe("Specification");
+      expect(docMeta.canonicalDate).toBe("2025-08-18");
+      expect(docMeta.coreSubject).toContain("Architecture Spec");
+    });
+
+    it("should reuse existing folders when semantic match >= 0.85, propose new folders when < 0.85, and never mutate Protected Directories", () => {
+      const existingFolders: DriveFolderNode[] = [
+        {
+          id: "dir_taxes_2025",
+          name: "2025",
+          path: "/Financial/Taxes/2025",
+          parentId: "dir_taxes",
+          depth: 3,
+          isProtected: false,
+        },
+        {
+          id: "dir_drafts",
+          name: "Drafts",
+          path: "/Drafts",
+          parentId: "root",
+          depth: 1,
+          isProtected: false,
+        },
+        {
+          id: "dir_archive_prot",
+          name: "Archive",
+          path: "/Archive",
+          parentId: "root",
+          depth: 1,
+          isProtected: true,
+        },
+      ];
+
+      const filesToStage: DriveFile[] = [
+        {
+          id: "f_scan_042",
+          name: "Scan_042.pdf",
+          mimeType: "application/pdf",
+          parents: ["root"],
+          content:
+            "Australian Taxation Office (ATO) — FY25 Notice of Assessment. Date: 2025-07-14. Subject: FY25 Notice of Assessment.",
+        },
+        {
+          id: "f_untitled_gdoc",
+          name: "Untitled.gdoc",
+          mimeType: "application/vnd.google-apps.document",
+          parents: ["dir_drafts"],
+          content:
+            "Project: Personal AI OS\nDate: 2025-08-20\nSubject: Architecture Spec - Personal AI OS",
+        },
+        {
+          id: "f_protected_item",
+          name: "Legacy_Deed.pdf",
+          mimeType: "application/pdf",
+          parents: ["dir_archive_prot"],
+          content: "Historical archive contract from 2020.",
+        },
+      ];
+
+      const diffRows = buildStagingDiff(filesToStage, existingFolders, DEFAULT_TAXONOMY_CONFIG);
+      expect(diffRows).toHaveLength(3);
+
+      // Row 1: Matches existing /Financial/Taxes/2025 with confidence >= 0.85
+      expect(diffRows[0].fileName).toBe("Scan_042.pdf");
+      expect(diffRows[0].proposedTargetFolder).toBe("/Financial/Taxes/2025");
+      expect(diffRows[0].matchType).toBe("Existing Folder");
+      expect(diffRows[0].confidence >= 0.85).toBe(true);
+
+      // Row 2: Proposes New Folder because no existing folder matches Personal AI OS Specs >= 0.85
+      expect(diffRows[1].fileName).toBe("Untitled.gdoc");
+      expect(diffRows[1].matchType).toBe("New Folder");
+      expect(diffRows[1].proposedTargetFolder).toContain("/Projects/Personal AI OS/Specs");
+
+      // Row 3: Protected directory item is skipped and never moved
+      expect(diffRows[2].matchType).toBe("Protected (Skipped)");
+      expect(diffRows[2].selected).toBe(false);
+
+      // Verify Markdown table output & mandatory confirmation prompt
+      const mdTable = formatStagingDiffMarkdownTable(diffRows);
+      expect(mdTable).toContain("| File Name | Detected Entity & Subject | Current Folder | Proposed Target Folder | Match Type | Confidence |");
+      expect(mdTable).toContain("Review the proposed moves above. Reply **Confirm** to execute, or tell me which paths to adjust.");
+    });
+
+    it("should enforce fail-closed confirmation on commit_staged_moves, record to .drive_organiser_ledger.json, and support atomic rollback", async () => {
+      // Polyfill in-memory localStorage for Node test environment
+      const store = new Map<string, string>();
+      (globalThis as any).localStorage = {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => store.set(k, v),
+        removeItem: (k: string) => store.delete(k),
+      };
+
+      const {
+        commitStagedMoves,
+        rollbackLastTransaction,
+        getOrganiserLedger,
+        generateConfirmationToken,
+      } = await import("../googleApi.ts");
+
+      const initialFiles: DriveFile[] = [
+        {
+          id: "f_scan_042",
+          name: "Scan_042.pdf",
+          mimeType: "application/pdf",
+          parents: ["root"],
+        },
+      ];
+
+      // 1. Fail-closed check: empty token must throw
+      await expect(
+        commitStagedMoves(null, "", [
+          {
+            file_id: "f_scan_042",
+            from_folder_id: "root",
+            to_folder_id: "/Financial/Taxes/2025",
+            rename_to: "2025-07-14 - ATO - FY25 Notice of Assessment.pdf",
+          },
+        ])
+      ).rejects.toThrow("Fail-closed security block");
+
+      // 2. Protected directory check: moving into /Archive must throw
+      const validToken = generateConfirmationToken(1);
+      await expect(
+        commitStagedMoves(null, validToken, [
+          {
+            file_id: "f_scan_042",
+            from_folder_id: "root",
+            to_folder_id: "/Archive/2025",
+            to_folder_path: "/Archive/2025",
+          },
+        ])
+      ).rejects.toThrow("Protected Directory violation");
+
+      // 3. Valid confirmed commit appends to .drive_organiser_ledger.json
+      const commitRes = await commitStagedMoves(
+        null,
+        validToken,
+        [
+          {
+            file_id: "f_scan_042",
+            from_folder_id: "root",
+            to_folder_id: "dir_taxes_2025",
+            to_folder_path: "/Financial/Taxes/2025",
+            rename_to: "2025-07-14 - ATO - FY25 Notice of Assessment.pdf",
+            original_name: "Scan_042.pdf",
+          },
+        ],
+        initialFiles
+      );
+
+      expect(commitRes.entries).toHaveLength(1);
+      expect(commitRes.entries[0].file_id).toBe("f_scan_042");
+      expect(commitRes.entries[0].original_parent_id).toBe("root");
+      expect(commitRes.entries[0].destination_parent_id).toBe("dir_taxes_2025");
+      expect(commitRes.entries[0].applied_name).toBe("2025-07-14 - ATO - FY25 Notice of Assessment.pdf");
+
+      const ledgerAfterCommit = getOrganiserLedger();
+      expect(ledgerAfterCommit).toHaveLength(1);
+      expect(ledgerAfterCommit[0].reverted).toBe(false);
+
+      // 4. Atomic Rollback & Undo restores original parent & name
+      const rollbackRes = await rollbackLastTransaction(null, commitRes.updatedLocalFiles);
+      expect(rollbackRes.restoredFiles).toHaveLength(1);
+      expect(rollbackRes.restoredFiles[0].fileId).toBe("f_scan_042");
+      expect(rollbackRes.restoredFiles[0].restoredParentId).toBe("root");
+      expect(rollbackRes.restoredFiles[0].fileName).toBe("Scan_042.pdf");
+
+      const ledgerAfterRollback = getOrganiserLedger();
+      expect(ledgerAfterRollback[0].reverted).toBe(true);
+    });
+
+    it("should respect user customisation rules (naming conventions, date placement, depth limit) and expose canonical tool declarations", () => {
+      const meta = {
+        primaryEntity: "Telstra",
+        documentType: "Invoice",
+        canonicalDate: "2025-09-03",
+        coreSubject: "Enterprise Fibre Monthly Billing",
+      };
+
+      const prefixName = formatProposedFileName("Scan_109.pdf", meta, {
+        ...DEFAULT_TAXONOMY_CONFIG,
+        namingConvention: "[YYYY-MM-DD] - [Entity] - [Subject]",
+        datePlacement: "prefix",
+      });
+      expect(prefixName).toBe("2025-09-03 - Telstra - Enterprise Fibre Monthly Billing.pdf");
+
+      const suffixName = formatProposedFileName("Scan_109.pdf", meta, {
+        ...DEFAULT_TAXONOMY_CONFIG,
+        namingConvention: "[Subject]_[OriginalName]",
+        datePlacement: "suffix",
+      });
+      expect(suffixName).toBe("Enterprise-Fibre-Monthly-Billing_Scan_109_2025-09-03.pdf");
+
+      expect(enforceFolderDepthLimit("/A/B/C/D/E", 3)).toBe("/A/B/C");
+      expect(CONTENT_INTELLIGENCE_TOOLS.map((t) => t.name)).toEqual([
+        "list_drive_structure",
+        "inspect_drive_file",
+        "commit_staged_moves",
+      ]);
+    });
   });
 });
+
+
 

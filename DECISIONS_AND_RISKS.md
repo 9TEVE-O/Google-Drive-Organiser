@@ -159,6 +159,17 @@ This register tracks all canonical architectural decisions (ADRs) under the expl
 - **Consequences**: Strict identity perimeter is established on all AI endpoints without breaking build or server startup.
 - **Validation Ref**: `VAL-SEC-05`.
 
+### ADR-014: Google Drive Content Intelligence & Fail-Closed Two-Phase Taxonomy Engine
+- **Status**: `ACTIVE`
+- **Context**: Opaque file names (`Scan_042.pdf`, `Untitled.gdoc`) cannot be reliably classified by filename heuristics alone, and mutating user Drive structure without explicit staging review risks unwanted restructuring.
+- **Decision**:
+  1. **Deep Content Ingestion (`inspectDriveFile` & `extractDeepContentMetadata`)**: Samples up to 2,000 tokens from Google Workspace exports (`text/plain`, `text/csv`) and document content streams to extract `primaryEntity`, `documentType`, ISO 8601 `canonicalDate` (`YYYY-MM-DD`), and `coreSubject`.
+  2. **Existing Taxonomy Matching (`listDriveStructure` & `buildStagingDiff`)**: Crawls the user's folder hierarchy and computes semantic similarity. Existing folders with confidence `>= 0.85` are reused (`Existing Folder`); new folders are only proposed when all existing folders score `< 0.85`. Protected directories (`/Archive`, `/Templates`, `/.drive_appdata`) are never mutated.
+  3. **Two-Phase Staging & Ledger (`commitStagedMoves` & `.drive_organiser_ledger.json`)**: Phase 1 outputs a read-only Staging Diff table concluding with an explicit confirmation prompt. Phase 2 requires a bound `confirmation_token` (`CONFIRM_DIFF_...`) before executing moves and appends every transaction to `.drive_organiser_ledger.json`.
+  4. **Atomic Rollback (`rollbackLastTransaction`) & Customisation Rules**: Supports instant `"Undo"` / `"Revert last batch"` in both `ContentIntelligencePanel.tsx` and `GeminiChatbot.tsx`, alongside custom naming conventions, prefix/suffix date placement, folder depth limits, and interactive session overrides.
+- **Consequences**: Safe, content-grounded, and 100% reversible Drive organisation across both the Smart Organizer UI and AI Assistant chat.
+- **Validation Ref**: `VAL-TAX-01`.
+
 ---
 
 ## 3. Risk Register

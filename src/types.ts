@@ -28,6 +28,7 @@ export interface DriveFile {
   decision?: FileDecision;
   decisionAction?: string;
   decisionRationale?: string;
+  contentMetadata?: ExtractedContentMetadata;
 }
 
 export interface BackupJob {
@@ -260,4 +261,84 @@ export interface PickedFileItem {
   sizeBytes?: number;
   lastEditedUtc?: number;
 }
+
+/**
+ * Deep Content Ingestion & Metadata Extraction Schema
+ */
+export interface ExtractedContentMetadata {
+  primaryEntity: string; // e.g., "ATO", "Telstra", "Bunnings", "Project Atlas"
+  documentType: string; // e.g., "Invoice", "Tax Return", "Contract", "Meeting Notes", "Specification"
+  canonicalDate: string; // ISO 8601: YYYY-MM-DD
+  coreSubject: string; // 5-10 words describing what the document actually covers
+  sampledTokensCount?: number;
+  extractedTextSnippet?: string;
+  extractionMethod?: 'workspace_export' | 'binary_ocr_sample' | 'content_stream' | 'heuristic_fallback';
+}
+
+export interface DriveFolderNode {
+  id: string;
+  name: string;
+  path: string;
+  parentId: string;
+  depth: number;
+  isProtected: boolean;
+}
+
+export interface StagingDiffRow {
+  fileId: string;
+  fileName: string;
+  detectedEntity: string;
+  detectedSubject: string;
+  documentType: string;
+  canonicalDate: string;
+  currentFolder: string;
+  currentFolderId: string;
+  proposedTargetFolder: string;
+  proposedTargetFolderId?: string;
+  proposedName: string;
+  matchType: 'Existing Folder' | 'New Folder' | 'Protected (Skipped)';
+  confidence: number; // 0.0 to 1.0
+  sampledTextSnippet?: string;
+  selected?: boolean;
+}
+
+export interface CommitStagedMoveItem {
+  file_id: string;
+  from_folder_id: string;
+  to_folder_id: string;
+  rename_to?: string;
+  to_folder_path?: string;
+  from_folder_path?: string;
+  original_name?: string;
+}
+
+export interface LedgerTransactionEntry {
+  transaction_id: string;
+  batch_id?: string;
+  timestamp_utc: string;
+  file_id: string;
+  original_parent_id: string;
+  destination_parent_id: string;
+  applied_name: string;
+  original_name?: string;
+  original_folder_path?: string;
+  destination_folder_path?: string;
+  reverted?: boolean;
+}
+
+export type NamingConventionPattern =
+  | "[YYYY-MM-DD] - [Entity] - [Subject]"
+  | "[Subject]_[OriginalName]"
+  | "[Entity] - [Subject] - [YYYY-MM-DD]"
+  | "preserve_original";
+
+export interface TaxonomyCustomisationConfig {
+  namingConvention: NamingConventionPattern;
+  datePlacement: "prefix" | "suffix";
+  maxFolderDepth: number; // default: 3
+  reuseThreshold: number; // default: 0.85
+  protectedPaths: string[]; // default: ["/Archive", "/Templates", "/.drive_appdata"]
+  sessionOverrides: { [key: string]: string }; // Entity/fileId -> target folder path
+}
+
 
