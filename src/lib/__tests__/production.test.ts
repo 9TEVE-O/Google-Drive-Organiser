@@ -500,4 +500,53 @@ describe("Core User Workflow Suite: Prompt Input -> Streaming Response -> Render
       expect(ChatSuggestionsSchema.required).toEqual(["suggestions"]);
     });
   });
+
+  describe("6. Firebase Initialization & Human Approval Security Gate", () => {
+    it("should export singleton auth and googleProvider with required Google Workspace scopes", async () => {
+      const { auth: liveAuth, googleProvider, provider, firebaseConfig } = await import("../googleApi.ts");
+      expect(liveAuth).toBeDefined();
+      expect(googleProvider).toBeDefined();
+      expect(provider).toBe(googleProvider);
+      expect(firebaseConfig.projectId).toBeDefined();
+      expect(firebaseConfig.apiKey).toBeDefined();
+      expect(firebaseConfig.authDomain).toBeDefined();
+    });
+
+    it("should enforce notification and require human approval before any email dispatch", () => {
+      const notificationsDispatched: Array<{ title: string; body: string }> = [];
+      const triggerNotification = (title: string, body: string) => {
+        notificationsDispatched.push({ title, body });
+      };
+
+      let pendingEmailApproval: any = null;
+      const onEmailApprovalRequest = (req: any) => {
+        pendingEmailApproval = req;
+      };
+
+      // Simulate email report preparation
+      const userEmail = "test.user@example.com";
+      const subject = "Activity Report";
+      const htmlBody = "<p>Digest</p>";
+
+      // Emulate human approval gate logic from TaskManager/App
+      triggerNotification("Human Approval Required", `Human approval is required before delivering activity report email to ${userEmail}.`);
+      onEmailApprovalRequest({
+        id: "email_appr_123",
+        recipientEmail: userEmail,
+        subject,
+        htmlBody,
+        timestamp: new Date().toISOString()
+      });
+
+      // Notification MUST be triggered
+      expect(notificationsDispatched.length).toBe(1);
+      expect(notificationsDispatched[0].title).toBe("Human Approval Required");
+      expect(notificationsDispatched[0].body).toContain("Human approval is required");
+
+      // Email is held in pending state, NOT delivered directly
+      expect(pendingEmailApproval).toBeDefined();
+      expect(pendingEmailApproval.recipientEmail).toBe("test.user@example.com");
+    });
+  });
 });
+

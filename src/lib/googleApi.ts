@@ -1,11 +1,26 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut, setPersistence, browserSessionPersistence } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
+import bundledFirebaseConfig from '../../firebase-applet-config.json';
 import { DriveFile, TaskItem, SheetMetadata, GoogleDocContent, PickedFileItem } from '../types';
 import { evaluateFileDecision } from './decisionEngine';
 
-// Initialize Firebase App
-const app = initializeApp(firebaseConfig);
+// Resolve configuration with fallback hierarchy:
+// 1. Environment variables (process.env.NEXT_PUBLIC_FIREBASE_* or Vite import.meta.env)
+// 2. Local bundled configuration from firebase-applet-config.json
+const env = typeof process !== 'undefined' && process.env ? process.env : ({} as Record<string, string | undefined>);
+const viteEnv = typeof import.meta !== 'undefined' && (import.meta as any).env ? (import.meta as any).env : {};
+
+export const firebaseConfig = {
+  apiKey: env.NEXT_PUBLIC_FIREBASE_API_KEY || viteEnv.VITE_FIREBASE_API_KEY || bundledFirebaseConfig.apiKey,
+  authDomain: env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || viteEnv.VITE_FIREBASE_AUTH_DOMAIN || bundledFirebaseConfig.authDomain,
+  projectId: env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || viteEnv.VITE_FIREBASE_PROJECT_ID || bundledFirebaseConfig.projectId,
+  storageBucket: env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || viteEnv.VITE_FIREBASE_STORAGE_BUCKET || bundledFirebaseConfig.storageBucket,
+  messagingSenderId: env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || viteEnv.VITE_FIREBASE_MESSAGING_SENDER_ID || bundledFirebaseConfig.messagingSenderId,
+  appId: env.NEXT_PUBLIC_FIREBASE_APP_ID || viteEnv.VITE_FIREBASE_APP_ID || bundledFirebaseConfig.appId,
+};
+
+// Singleton Firebase App initialization
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
 // Use session persistence so credentials wipe when the browser session closes
@@ -14,17 +29,20 @@ setPersistence(auth, browserSessionPersistence).catch((err) => {
 });
 
 // Configure Google Provider with required scopes
-export const provider = new GoogleAuthProvider();
-provider.addScope('https://www.googleapis.com/auth/drive');
-provider.addScope('https://www.googleapis.com/auth/drive.file');
-provider.addScope('https://www.googleapis.com/auth/drive.readonly');
-provider.addScope('https://www.googleapis.com/auth/drive.metadata.readonly');
-provider.addScope('https://www.googleapis.com/auth/documents');
-provider.addScope('https://www.googleapis.com/auth/documents.readonly');
-provider.addScope('https://www.googleapis.com/auth/spreadsheets');
-provider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
-provider.addScope('https://www.googleapis.com/auth/gmail.send');
-provider.addScope('https://www.googleapis.com/auth/tasks');
+export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('https://www.googleapis.com/auth/drive');
+googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
+googleProvider.addScope('https://www.googleapis.com/auth/drive.readonly');
+googleProvider.addScope('https://www.googleapis.com/auth/drive.metadata.readonly');
+googleProvider.addScope('https://www.googleapis.com/auth/documents');
+googleProvider.addScope('https://www.googleapis.com/auth/documents.readonly');
+googleProvider.addScope('https://www.googleapis.com/auth/spreadsheets');
+googleProvider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
+googleProvider.addScope('https://www.googleapis.com/auth/gmail.send');
+googleProvider.addScope('https://www.googleapis.com/auth/tasks');
+
+// Maintain backward compatibility for existing code importing 'provider'
+export const provider = googleProvider;
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
