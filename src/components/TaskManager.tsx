@@ -3,7 +3,7 @@ import React, { useState, useEffect } from "react";
 import { 
   CheckSquare, Calendar, Bell, Send, Trash2, Plus, Clock, 
   Mail, Settings, ChevronRight, CheckCircle2, RefreshCw, Layers, Eye,
-  FolderPlus, FileEdit, Move, Play, Filter, Check
+  FolderPlus, FileEdit, Move, Play, Filter, Check, AlertCircle, Info, X
 } from "lucide-react";
 import { TaskItem, ActivityLog, SmartTaskReminder, DriveFile, EmailApprovalRequest } from "../types";
 import { 
@@ -74,6 +74,13 @@ export default function TaskManager({
   const [showReportPreview, setShowReportPreview] = useState(false);
   const [isSendingMail, setIsSendingMail] = useState(false);
   const [localPendingApproval, setLocalPendingApproval] = useState<EmailApprovalRequest | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<{id: string, title: string} | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [taskAsyncState, setTaskAsyncState] = useState<{
+    status: "idle" | "loading" | "success" | "empty" | "failed";
+    message: string | null;
+    retryFn: (() => Promise<void>) | null;
+  }>({ status: "idle", message: null, retryFn: null });
 
   // Fetch Task Lists & tasks on mount
   useEffect(() => {
@@ -85,16 +92,29 @@ export default function TaskManager({
   // Load parent categories
   const loadTaskLists = async () => {
     if (!token) return;
+    setIsTaskLoading(true);
+    setTaskAsyncState({ status: "loading", message: "Loading Google Task lists...", retryFn: null });
     try {
-      setIsTaskLoading(true);
       const lists = await listTaskLists(token);
       setTaskLists(lists);
       if (lists.length > 0) {
         setSelectedListId(lists[0].id);
         await loadTasksForList(lists[0].id);
+      } else {
+        setTasks([]);
+        setTaskAsyncState({
+          status: "empty",
+          message: "No Google Task lists found in this account. Create a new list to begin.",
+          retryFn: loadTaskLists
+        });
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      setTaskAsyncState({
+        status: "failed",
+        message: `Failed to load Google Task lists: ${e?.message || "Google Tasks API error"}`,
+        retryFn: loadTaskLists
+      });
     } finally {
       setIsTaskLoading(false);
     }
@@ -103,12 +123,31 @@ export default function TaskManager({
   // Load target tasks
   const loadTasksForList = async (listId: string) => {
     if (!token || !listId) return;
+    setIsTaskLoading(true);
+    setTaskAsyncState({ status: "loading", message: "Synchronising tasks from Google Tasks...", retryFn: null });
     try {
-      setIsTaskLoading(true);
       const items = await listTasks(token, listId);
       setTasks(items);
-    } catch (e) {
+      if (items.length === 0) {
+        setTaskAsyncState({
+          status: "empty",
+          message: "Task list synchronised (0 tasks in this list).",
+          retryFn: null
+        });
+      } else {
+        setTaskAsyncState({
+          status: "success",
+          message: `Synchronised ${items.length} task(s) from Google Tasks.`,
+          retryFn: null
+        });
+      }
+    } catch (e: any) {
       console.error(e);
+      setTaskAsyncState({
+        status: "failed",
+        message: `Failed to fetch tasks for list: ${e?.message || "Google Tasks API error"}`,
+        retryFn: () => loadTasksForList(listId)
+      });
     } finally {
       setIsTaskLoading(false);
     }
@@ -122,16 +161,28 @@ export default function TaskManager({
 
   // Create new task list category
   const handleAddCategoryAction = async () => {
-    if (!token || !newListTitle) return;
+    if (!token || !newListTitle.trim()) return;
+    const titleToCreate = newListTitle.trim();
+    setIsTaskLoading(true);
+    setTaskAsyncState({ status: "loading", message: `Creating task list "${titleToCreate}"...`, retryFn: null });
     try {
-      setIsTaskLoading(true);
-      const newList = await createTaskList(token, newListTitle);
-      addLog("task", `Created new Task category list: "${newListTitle}"`, `List ID: ${newList.id}`);
+      const newList = await createTaskList(token, titleToCreate);
+      addLog("task", `Created new Task category list: "${titleToCreate}"`, `List ID: ${newList.id}`);
       setNewListTitle("");
       setIsCreatingList(false);
       await loadTaskLists();
+      setTaskAsyncState({
+        status: "success",
+        message: `Created Google Task list "${titleToCreate}".`,
+        retryFn: null
+      });
     } catch (e: any) {
       console.error("Error adding task category:", e);
+      setTaskAsyncState({
+        status: "failed",
+        message: `Could not create task list "${titleToCreate}": ${e?.message || "API error"}`,
+        retryFn: handleAddCategoryAction
+      });
     } finally {
       setIsTaskLoading(false);
     }
@@ -139,23 +190,35 @@ export default function TaskManager({
 
   // Create Google Task Item
   const handleAddTaskItem = async () => {
-    if (!token || !selectedListId || !newTitle) return;
+    if (!token || !selectedListId || !newTitle.trim()) return;
+    const titleToCreate = newTitle.trim();
+    setIsTaskLoading(true);
+    setTaskAsyncState({ status: "loading", message: `Creating task "${titleToCreate}"...`, retryFn: null });
     try {
-      setIsTaskLoading(true);
       const isoDue = newDueDate ? new Date(newDueDate).toISOString() : undefined;
       await createGoogleTask(token, selectedListId, {
-        title: newTitle,
+        title: titleToCreate,
         notes: newNotes,
         due: isoDue
       });
 
-      addLog("task", `Created task: "${newTitle}"`, `Category ID: ${selectedListId}`);
+      addLog("task", `Created task: "${titleToCreate}"`, `Category ID: ${selectedListId}`);
       setNewTitle("");
       setNewNotes("");
       setNewDueDate("");
       await loadTasksForList(selectedListId);
+      setTaskAsyncState({
+        status: "success",
+        message: `Task "${titleToCreate}" added to Google Tasks.`,
+        retryFn: null
+      });
     } catch (e: any) {
       console.error("Error adding task:", e);
+      setTaskAsyncState({
+        status: "failed",
+        message: `Failed to create task "${titleToCreate}": ${e?.message || "Google Tasks API error"}`,
+        retryFn: handleAddTaskItem
+      });
     } finally {
       setIsTaskLoading(false);
     }
@@ -164,33 +227,69 @@ export default function TaskManager({
   // Complete/Uncomplete Google Task
   const handleToggleTaskStatus = async (task: TaskItem) => {
     if (!token || !selectedListId) return;
+    const targetStatus = task.status === "needsAction" ? "completed" : "needsAction";
+    setTaskAsyncState({
+      status: "loading",
+      message: `Updating "${task.title}" status...`,
+      retryFn: null
+    });
     try {
-      const targetStatus = task.status === "needsAction" ? "completed" : "needsAction";
       await updateGoogleTask(token, selectedListId, task.id, {
         status: targetStatus
       });
       addLog("task", `Marked task "${task.title}" as ${targetStatus === 'completed' ? 'Done' : 'In-Progress'}`, `ID: ${task.id}`);
       await loadTasksForList(selectedListId);
+      setTaskAsyncState({
+        status: "success",
+        message: `Marked "${task.title}" as ${targetStatus === "completed" ? "Completed" : "Needs Action"}.`,
+        retryFn: null
+      });
     } catch (e: any) {
       console.error("Error updating task state:", e);
+      setTaskAsyncState({
+        status: "failed",
+        message: `Failed to update task "${task.title}": ${e?.message || "API error"}`,
+        retryFn: () => handleToggleTaskStatus(task)
+      });
     }
   };
 
   // Delete Google Task
   const handleDeleteTaskAction = async (taskId: string, title: string) => {
     if (!token || !selectedListId) return;
-    const confirmDel = window.confirm(`Are you sure you want to delete task "${title}"? This cannot be undone.`);
-    if (!confirmDel) return;
+    setTaskToDelete({ id: taskId, title });
+  };
 
+  const confirmDeleteTask = async () => {
+    if (!token || !selectedListId || !taskToDelete) return;
+    const target = taskToDelete;
+    setIsDeleting(true);
+    setIsTaskLoading(true);
+    setTaskAsyncState({
+      status: "loading",
+      message: `Deleting task "${target.title}"...`,
+      retryFn: null
+    });
     try {
-      setIsTaskLoading(true);
-      await deleteGoogleTask(token, selectedListId, taskId);
-      addLog("task", `Deleted Google Task item "${title}"`, `ID: ${taskId}`);
+      await deleteGoogleTask(token, selectedListId, target.id);
+      addLog("task", `Deleted Google Task item "${target.title}"`, `ID: ${target.id}`);
+      setTaskToDelete(null);
       await loadTasksForList(selectedListId);
+      setTaskAsyncState({
+        status: "success",
+        message: `Deleted task "${target.title}".`,
+        retryFn: null
+      });
     } catch (e: any) {
       console.error("Error deleting task:", e);
+      setTaskAsyncState({
+        status: "failed",
+        message: `Failed to delete task "${target.title}": ${e?.message || "API error"}`,
+        retryFn: confirmDeleteTask
+      });
     } finally {
       setIsTaskLoading(false);
+      setIsDeleting(false);
     }
   };
 
@@ -226,12 +325,26 @@ export default function TaskManager({
 
   // Create Beautiful Custom report using Gemini Server route
   const handleComposeSummaryReport = async () => {
+    if (activities.length === 0) {
+      setTaskAsyncState({
+        status: "empty",
+        message: "No logged workspace activities available to compile into an email digest.",
+        retryFn: null
+      });
+      return;
+    }
     setIsComposingReport(true);
+    setTaskAsyncState({
+      status: "loading",
+      message: "Composing executive activity report with Gemini...",
+      retryFn: null
+    });
     try {
       // Package last activities list limit to 8
       const eventsListText = activities.slice(0, 10).map(act => `[${act.timestamp}] ${act.message}`);
 
       let data: any = null;
+      let fetchFailedMsg: string | null = null;
       try {
         const res = await geminiFetch("/api/gemini/compose-report", {
           method: "POST",
@@ -246,20 +359,28 @@ export default function TaskManager({
         const text = await res.text();
         if (text && (text.startsWith("{") || text.startsWith("["))) {
           data = JSON.parse(text);
+        } else if (!res.ok) {
+          fetchFailedMsg = `HTTP ${res.status}`;
         }
-      } catch (fetchErr) {
+      } catch (fetchErr: any) {
         console.warn("Fetch /api/gemini/compose-report error:", fetchErr);
+        fetchFailedMsg = fetchErr?.message || "Network error";
       }
 
       if (data && data.success && data.report) {
         setComposedSubject(data.report.subject);
         setComposedHtml(data.report.htmlBody);
         setShowReportPreview(true);
+        setTaskAsyncState({
+          status: "success",
+          message: "Executive activity report composed and ready for preview.",
+          retryFn: null
+        });
       } else {
         // Fallback report
         const safeUser = escapeHtml(userEmail || 'Active User');
         setComposedSubject("Drive Companion: Automated Organization & Task Report");
-        setComposedHtml(`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; background: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0;">
+        setComposedHtml(`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #1e293b; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
           <h2 style="color: #4f46e5; margin-top: 0;">Drive Companion Activity Summary</h2>
           <p style="font-size: 14px; color: #64748b;">Report for <strong>${safeUser}</strong></p>
           <div style="background: #f8fafc; border-radius: 12px; padding: 16px; margin: 16px 0; border: 1px solid #e2e8f0;">
@@ -272,9 +393,21 @@ export default function TaskManager({
           </ul>
         </div>`);
         setShowReportPreview(true);
+        setTaskAsyncState({
+          status: fetchFailedMsg ? "failed" : "success",
+          message: fetchFailedMsg
+            ? `AI report service unreachable (${fetchFailedMsg}). Prepared deterministic fallback digest.`
+            : "Prepared activity digest preview.",
+          retryFn: fetchFailedMsg ? handleComposeSummaryReport : null
+        });
       }
     } catch (e: any) {
       console.error("Composing report error:", e);
+      setTaskAsyncState({
+        status: "failed",
+        message: `Failed to compose summary report: ${e?.message || "Unexpected error"}`,
+        retryFn: handleComposeSummaryReport
+      });
     } finally {
       setIsComposingReport(false);
     }
@@ -316,6 +449,11 @@ export default function TaskManager({
   const handleLocalApproveEmail = async (req: EmailApprovalRequest) => {
     if (!token) return;
     setIsSendingMail(true);
+    setTaskAsyncState({
+      status: "loading",
+      message: `Delivering approved email report to ${req.recipientEmail}...`,
+      retryFn: null
+    });
     try {
       await sendGmailReport(token, req.recipientEmail, req.subject, req.htmlBody);
       addLog("email", `Human approved email delivered to ${req.recipientEmail}`, `Subject: ${req.subject}`);
@@ -323,11 +461,21 @@ export default function TaskManager({
         onTriggerNotification("Email Delivered", `Successfully delivered report to ${req.recipientEmail}`);
       }
       setLocalPendingApproval(null);
+      setTaskAsyncState({
+        status: "success",
+        message: `Email report "${req.subject}" delivered to ${req.recipientEmail}.`,
+        retryFn: null
+      });
     } catch (e: any) {
       console.error("Error sending approved email:", e);
       if (onTriggerNotification) {
         onTriggerNotification("Email Delivery Failed", e?.message || "Failed to deliver email through Gmail API.");
       }
+      setTaskAsyncState({
+        status: "failed",
+        message: `Email delivery failed: ${e?.message || "Failed to deliver email through Gmail API."}`,
+        retryFn: () => handleLocalApproveEmail(req)
+      });
     } finally {
       setIsSendingMail(false);
     }
@@ -343,6 +491,55 @@ export default function TaskManager({
 
   return (
     <div className="space-y-6">
+      {/* Inline Task & Mailer Async Status & Retry Feedback */}
+      {taskAsyncState.status !== "idle" && taskAsyncState.message && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`rounded-xl border px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 ${
+            taskAsyncState.status === "failed"
+              ? "border-rose-200 dark:border-rose-800/80 bg-rose-50/90 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+              : taskAsyncState.status === "loading"
+              ? "border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/80 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200"
+              : taskAsyncState.status === "empty"
+              ? "border-amber-200 dark:border-amber-800/80 bg-amber-50/80 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200"
+              : "border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200"
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {taskAsyncState.status === "loading" && <RefreshCw className="h-4 w-4 animate-spin shrink-0 text-indigo-600 dark:text-indigo-400" />}
+            {taskAsyncState.status === "failed" && <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />}
+            {taskAsyncState.status === "empty" && <Info className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />}
+            {taskAsyncState.status === "success" && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />}
+            <span className="font-mono uppercase text-[10px] font-semibold px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 shrink-0">
+              {taskAsyncState.status}
+            </span>
+            <span className="font-medium">{taskAsyncState.message}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {taskAsyncState.retryFn && (
+              <button
+                type="button"
+                onClick={() => taskAsyncState.retryFn?.()}
+                disabled={isTaskLoading || isComposingReport || isSendingMail}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold shadow-2xs transition cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3 w-3 ${(isTaskLoading || isComposingReport || isSendingMail) ? "animate-spin" : ""}`} />
+                <span>Retry Action</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setTaskAsyncState({ status: "idle", message: null, retryFn: null })}
+              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 transition cursor-pointer"
+              title="Dismiss notification"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* LEFT PANEL: Google Tasks List and creation */}
@@ -830,6 +1027,38 @@ export default function TaskManager({
         onDecline={handleLocalDeclineEmail}
         isSending={isSendingMail}
       />
+
+      {/* Task Delete Confirmation Modal */}
+      {taskToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xl animate-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 mb-4 text-rose-600 dark:text-rose-400">
+              <div className="h-10 w-10 rounded-full bg-rose-50 dark:bg-rose-950/40 flex items-center justify-center">
+                <Trash2 className="h-5 w-5" />
+              </div>
+              <h3 className="font-semibold text-slate-900 dark:text-slate-100">Delete Task?</h3>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-6">
+              Are you sure you want to delete <strong className="text-slate-700 dark:text-slate-300">"{taskToDelete.title}"</strong>? This action cannot be reversed.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setTaskToDelete(null)}
+                className="flex-1 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteTask}
+                disabled={isDeleting}
+                className="flex-1 px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-medium shadow-xs transition cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting ? "Deleting..." : "Delete Task"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -302,18 +302,20 @@ export const ContextualActionToolbar: React.FC<ContextualActionToolbarProps> = (
     return (
       <section 
         aria-label="Empty view actions"
-        className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/50 p-12 text-center shadow-xs space-y-3"
+        className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/60 p-8 sm:p-12 text-center shadow-xs space-y-4"
       >
-        <div className="h-10 w-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 dark:text-slate-500 mb-1">
-          <AlertCircle className="h-5 w-5" />
+        <div className="h-10 w-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-400">
+          <AlertCircle className="h-5 w-5" aria-hidden="true" />
         </div>
-        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 font-display">
-          {emptyTitle || `No records found in ${activeTab}`}
-        </h3>
-        <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm leading-relaxed">
-          {emptyDescription || "Get started by creating your first entry or importing existing workspace resources."}
-        </p>
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-2 pt-2">
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100 font-display">
+            {emptyTitle || `No records found in ${activeTab}`}
+          </h3>
+          <p className="text-xs text-slate-600 dark:text-slate-400 max-w-sm leading-relaxed">
+            {emptyDescription || "Get started by creating your first entry or importing existing workspace resources."}
+          </p>
+        </div>
+        <div role="toolbar" aria-label="Quick start actions" className="pt-2 flex flex-wrap items-center justify-center gap-2">
           {actions.map((action) => {
             const Icon = action.icon;
             return (
@@ -322,13 +324,13 @@ export const ContextualActionToolbar: React.FC<ContextualActionToolbarProps> = (
                 type="button"
                 onClick={action.onClick}
                 disabled={action.disabled}
-                className={`flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition active:scale-95 cursor-pointer disabled:opacity-50 ${
+                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 min-h-[38px] text-xs font-semibold transition-all active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
                   action.primary
-                    ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs'
-                    : 'border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
+                    ? 'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white shadow-xs'
+                    : 'border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 active:bg-slate-100'
                 }`}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className="h-4 w-4" aria-hidden="true" />
                 <span>{action.label}</span>
               </button>
             );
@@ -338,12 +340,11 @@ export const ContextualActionToolbar: React.FC<ContextualActionToolbarProps> = (
     );
   }
 
-  // 4. Normal State: Integrated Header Actions (No Viewport Occlusion, In-Flow)
+  // 4. Normal State: Integrated Header Actions (No Viewport Occlusion, In-Flow, 8px Grid)
   return (
-    <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+    <div role="toolbar" aria-label="Contextual workspace actions" className="flex items-center gap-2 shrink-0">
       {actions.map((action, idx) => {
         const Icon = action.icon;
-        // On phone app view, only show the primary action or first 2 actions to prevent wrapping
         const isPriorityAction = action.primary || idx === 0;
         return (
           <button
@@ -352,15 +353,16 @@ export const ContextualActionToolbar: React.FC<ContextualActionToolbarProps> = (
             type="button"
             onClick={action.onClick}
             disabled={action.disabled}
-            className={`items-center gap-1.5 rounded-lg px-2.5 sm:px-3 py-1.5 text-xs font-medium transition active:scale-95 cursor-pointer disabled:opacity-50 shadow-xs ${
-              isPriorityAction ? 'flex' : 'hidden sm:flex'
+            aria-label={action.label}
+            className={`items-center gap-2 rounded-lg px-3 py-2 min-h-[36px] text-xs font-medium transition-all active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+              isPriorityAction ? 'inline-flex' : 'hidden sm:inline-flex'
             } ${
               action.primary
-                ? 'bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 text-white font-semibold'
-                : 'border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/60'
+                ? 'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 dark:bg-indigo-500 dark:hover:bg-indigo-600 text-white font-semibold'
+                : 'border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/70 active:bg-slate-100'
             }`}
           >
-            <Icon className="h-3.5 w-3.5 text-current shrink-0" />
+            <Icon className="h-3.5 w-3.5 text-current shrink-0" aria-hidden="true" />
             <span className={action.primary ? 'inline' : 'hidden sm:inline'}>{action.label}</span>
           </button>
         );

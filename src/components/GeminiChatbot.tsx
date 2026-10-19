@@ -1,5 +1,5 @@
 import { geminiFetch } from "../lib/geminiApi";
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { 
   Bot, 
   User, 
@@ -97,6 +97,9 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
   // Dynamic Suggestions state
   const [aiSuggestions, setAiSuggestions] = useState<string[]>(DEFAULT_STARTERS);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
+  const [chatAsyncStatus, setChatAsyncStatus] = useState<"idle" | "loading" | "success" | "empty" | "failed">("idle");
+  const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -135,11 +138,17 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
     setTimeout(() => setToastNotice(null), 2500);
   };
 
-  const handleSendMessage = async (textToSend?: string) => {
+  const handleSendMessage = useCallback(async (textToSend?: string) => {
     const text = (textToSend || inputText).trim();
-    if (!text || isLoading) return;
+    if (!text) {
+      setChatAsyncStatus("empty");
+      return;
+    }
+    if (isLoading) return;
 
     setApiError(null);
+    setLastFailedPrompt(null);
+    setChatAsyncStatus("loading");
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -154,6 +163,7 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
 
     try {
       let data: any = null;
+      let statusDetail = "";
       try {
         const response = await geminiFetch("/api/gemini/chat", {
           method: "POST",
@@ -165,16 +175,18 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
           })
         });
 
+        statusDetail = `HTTP ${response.status}`;
         const resText = await response.text();
         if (resText && (resText.startsWith("{") || resText.startsWith("["))) {
           data = JSON.parse(resText);
         }
-      } catch (fetchErr) {
+      } catch (fetchErr: any) {
         console.warn("Fetch /api/gemini/chat error:", fetchErr);
+        statusDetail = fetchErr?.message || "Network connection failed";
       }
 
       if (!data || !data.reply) {
-        throw new Error(data?.error || "AI assistant is temporarily busy. Please try again.");
+        throw new Error(data?.error || `AI assistant request failed (${statusDetail || "Service busy"}).`);
       }
 
       const botReply: ChatMessage = {
@@ -186,14 +198,17 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
       };
 
       setMessages(prev => [...prev, botReply]);
+      setChatAsyncStatus("success");
     } catch (err: any) {
       console.error("Chat Error:", err);
       setApiError(err.message || "Failed to reach AI service.");
+      setLastFailedPrompt(text);
+      setChatAsyncStatus("failed");
     } finally {
       setIsLoading(false);
       setTimeout(() => inputRef.current?.focus(), 100);
     }
-  };
+  }, [inputText, isLoading, messages, customInstruction, selectedModel]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -271,10 +286,11 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
   }, [selectedModel, files, selectedPresetId]);
 
   // AI-Powered Dynamic Suggestion Generator
-  const handleGenerateAiSuggestions = async () => {
+  const handleGenerateAiSuggestions = useCallback(async () => {
     if (isGeneratingSuggestions) return;
     setIsGeneratingSuggestions(true);
-    setApiError(null);
+    setSuggestionsError(null);
+    setChatAsyncStatus("loading");
 
     try {
       const sampleNames = files?.slice(0, 8).map(f => f.name) || [];
@@ -287,15 +303,18 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
         })
       });
 
-      if (!res.ok) throw new Error("Could not fetch suggestions");
+      if (!res.ok) throw new Error(`HTTP ${res.status}: Could not fetch prompt suggestions`);
       const data = await res.json();
       if (data && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
         setAiSuggestions(data.suggestions);
+        setChatAsyncStatus("success");
         setToastNotice("New suggestions ready");
         setTimeout(() => setToastNotice(null), 2500);
+      } else {
+        setChatAsyncStatus("empty");
       }
-    } catch {
-      // Fallback suggestions
+    } catch (err: any) {
+      // Fallback suggestions with inline retry notice
       const sample = files?.[0]?.name ? ` for '${files[0].name}'` : "";
       setAiSuggestions([
         `What folder structure do you recommend${sample}?`,
@@ -303,10 +322,12 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
         "Create an automated weekly checklist to prevent Drive clutter",
         "Turn pending invoices into actionable Google Tasks with deadlines"
       ]);
+      setSuggestionsError(err?.message || "Failed to refresh AI prompt suggestions; showing fallback starters.");
+      setChatAsyncStatus("failed");
     } finally {
       setIsGeneratingSuggestions(false);
     }
-  };
+  }, [isGeneratingSuggestions, files, activePreset.title]);
 
   const isStarterOnly = messages.length <= 1;
 
@@ -568,11 +589,65 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
           </div>
         )}
 
-        {/* Clean Error Notice */}
+        {/* Clean Error Notice with Automatic Retry Button */}
         {apiError && (
-          <div className="rounded-xl border border-rose-200 dark:border-rose-800/80 bg-rose-50/80 dark:bg-rose-950/30 p-3 text-xs text-rose-800 dark:text-rose-300 flex items-start gap-2 max-w-lg mx-auto">
-            <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400 mt-0.5" />
-            <p className="flex-1 leading-relaxed">{apiError}</p>
+          <div role="alert" className="rounded-xl border border-rose-200 dark:border-rose-800/80 bg-rose-50/90 dark:bg-rose-950/40 p-3.5 text-xs text-rose-800 dark:text-rose-200 flex flex-wrap items-center justify-between gap-3 max-w-lg mx-auto">
+            <div className="flex items-start gap-2 min-w-0 flex-1">
+              <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400 mt-0.5" />
+              <div className="space-y-0.5">
+                <span className="font-mono uppercase text-[10px] font-semibold px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/60 inline-block">
+                  {chatAsyncStatus}
+                </span>
+                <p className="leading-relaxed font-medium">{apiError}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {lastFailedPrompt && (
+                <button
+                  type="button"
+                  onClick={() => handleSendMessage(lastFailedPrompt)}
+                  disabled={isLoading}
+                  className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  <span>Retry Message</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setApiError(null)}
+                className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-900/50 text-rose-600 dark:text-rose-300 cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {suggestionsError && (
+          <div role="alert" className="rounded-xl border border-amber-200 dark:border-amber-800/80 bg-amber-50/90 dark:bg-amber-950/40 p-3 text-xs text-amber-800 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2 max-w-lg mx-auto">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <AlertCircle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <span className="truncate">{suggestionsError}</span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleGenerateAiSuggestions}
+                disabled={isGeneratingSuggestions}
+                className="inline-flex items-center gap-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3 w-3 ${isGeneratingSuggestions ? "animate-spin" : ""}`} />
+                <span>Retry Ideas</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSuggestionsError(null)}
+                className="p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-900/50 cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         )}
 

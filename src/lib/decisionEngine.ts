@@ -210,11 +210,13 @@ export const evaluateFileDecision = (file: DriveFile, rules: OrganizerRule[] = [
     rationale = `High-compliance ${bestCategory} record requires structured indexing in /${detectedTargetFolder}.`;
   }
 
-  // Check if the file's parent ID matches a known folder ID for the target category
+  // H-02: Check if the file's parent ID matches a known folder ID or name for the target category
   const currentParentId = file.parents?.[0];
+  
+  // Attempt to resolve parent name if possible or assume currentParentId might be a name in simulation
   const isAlreadyInTarget = currentParentId && (
     currentParentId.toLowerCase() === detectedTargetFolder.toLowerCase() ||
-    currentParentId === file.id // or matched against folder cache
+    currentParentId === file.id
   );
 
   if (isAlreadyInTarget) {

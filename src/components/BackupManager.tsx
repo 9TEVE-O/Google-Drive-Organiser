@@ -4,7 +4,7 @@ import {
   CheckCircle2, RefreshCw, AlertCircle, Trash2, Info, ChevronRight, Check, X 
 } from "lucide-react";
 import { BackupJob, BackupLog, DriveFile } from "../types";
-import { createDriveFolder, createDriveTextFile } from "../lib/googleApi";
+import { createDriveFolder, createDriveTextFile, copyDriveFile } from "../lib/googleApi";
 import InfoTooltip from "./InfoTooltip";
 import ContextualActionToolbar from "./ContextualActionToolbar";
 
@@ -40,6 +40,11 @@ export default function BackupManager({
   const [isExecuting, setIsExecuting] = useState<string | null>(null);
   const [processingFile, setProcessingFile] = useState<string | null>(null);
   const [processingProgress, setProcessingProgress] = useState<{current: number, total: number} | null>(null);
+  const [backupAsyncState, setBackupAsyncState] = useState<{
+    status: "idle" | "loading" | "success" | "empty" | "failed";
+    message: string | null;
+    retryJobId: string | null;
+  }>({ status: "idle", message: null, retryJobId: null });
 
   // Available client folders for sources (strictly deduplicated by ID)
   const folders = React.useMemo(() => {
@@ -92,11 +97,24 @@ export default function BackupManager({
 
   // Run the backup job (Real Integration)
   const handleRunBackupJob = async (jobId: string) => {
-    if (!token) return;
     const job = backupJobs.find(j => j.id === jobId);
     if (!job) return;
 
+    if (!token) {
+      setBackupAsyncState({
+        status: "failed",
+        message: `Backup "${job.name}" blocked: Google Drive authentication token is missing.`,
+        retryJobId: jobId
+      });
+      return;
+    }
+
     setIsExecuting(jobId);
+    setBackupAsyncState({
+      status: "loading",
+      message: `Executing backup routine "${job.name}" to /${job.destinationFolderName}...`,
+      retryJobId: null
+    });
     
     // Set status to running
     setBackupJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'running' } : j));
@@ -117,11 +135,22 @@ export default function BackupManager({
 
       setProcessingProgress({ current: 0, total: sourceFiles.length });
 
-      // Simulate granular file processing
+      // H-04: Perform actual file copying for backup
+      let copiedCount = 0;
+      const copyFailures: string[] = [];
       for (let i = 0; i < sourceFiles.length; i++) {
-        setProcessingFile(sourceFiles[i].name);
+        const fileToCopy = sourceFiles[i];
+        setProcessingFile(fileToCopy.name);
         setProcessingProgress({ current: i + 1, total: sourceFiles.length });
-        await new Promise(resolve => setTimeout(resolve, 600)); // Artificial delay for UI feedback
+        
+        try {
+          // Create the copy in the destination folder
+          await copyDriveFile(token, fileToCopy.id, backupFolderMeta.id, `Backup_${fileToCopy.name}`);
+          copiedCount++;
+        } catch (copyErr: any) {
+          console.warn(`Failed to copy file ${fileToCopy.name}:`, copyErr);
+          copyFailures.push(fileToCopy.name);
+        }
       }
 
       setProcessingFile(null);
@@ -150,14 +179,34 @@ export default function BackupManager({
         jobId,
         jobName: job.name,
         status: "success",
-        message: `Backup executed from connected devices (${job.devices.join(", ")}). Generated safe catalog report file inside '${job.destinationFolderName}'.`,
-        filesCopied: sourceFiles.length
+        message: `Backup executed from connected devices (${job.devices.join(", ")}). Created ${copiedCount} copies and generated safe catalog report file inside '${job.destinationFolderName}'.`,
+        filesCopied: copiedCount
       };
 
-      setBackupHistory([newLog, ...backupHistory]);
+      setBackupHistory(prev => [newLog, ...prev]);
       setBackupJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'success', lastRun: runTime } : j));
       addLog("backup", `Succeeded automated Cloud Backup execution for "${job.name}"`, `Copied content details for ${sourceFiles.length} files.`);
       await onRefresh();
+
+      if (sourceFiles.length === 0) {
+        setBackupAsyncState({
+          status: "empty",
+          message: `Backup "${job.name}" completed: Source folder "${job.sourceFolderName}" contained 0 files. Catalog log written to /${job.destinationFolderName}.`,
+          retryJobId: null
+        });
+      } else if (copyFailures.length > 0) {
+        setBackupAsyncState({
+          status: "failed",
+          message: `Backup "${job.name}" partially completed (${copiedCount}/${sourceFiles.length} copied; ${copyFailures.length} failed: ${copyFailures.slice(0, 3).join(", ")}).`,
+          retryJobId: jobId
+        });
+      } else {
+        setBackupAsyncState({
+          status: "success",
+          message: `Backup "${job.name}" succeeded: Copied ${copiedCount} file(s) and saved audit log to /${job.destinationFolderName}.`,
+          retryJobId: null
+        });
+      }
     } catch (e: any) {
       console.error(e);
       const newLog: BackupLog = {
@@ -169,8 +218,13 @@ export default function BackupManager({
         message: `Automated backup failed. Detail: ${e.message}`,
         filesCopied: 0
       };
-      setBackupHistory([newLog, ...backupHistory]);
+      setBackupHistory(prev => [newLog, ...prev]);
       setBackupJobs(prev => prev.map(j => j.id === jobId ? { ...j, status: 'failed' } : j));
+      setBackupAsyncState({
+        status: "failed",
+        message: `Backup routine "${job.name}" failed: ${e.message || "Google Drive API error"}`,
+        retryJobId: jobId
+      });
       console.error("Backup failed:", e);
     } finally {
       setIsExecuting(null);
@@ -207,6 +261,55 @@ export default function BackupManager({
           <span>New Backup Job</span>
         </button>
       </div>
+
+      {/* Inline Backup Async Status & Retry Feedback */}
+      {backupAsyncState.status !== "idle" && backupAsyncState.message && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`rounded-xl border px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 ${
+            backupAsyncState.status === "failed"
+              ? "border-rose-200 dark:border-rose-800/80 bg-rose-50/90 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+              : backupAsyncState.status === "loading"
+              ? "border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/80 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200"
+              : backupAsyncState.status === "empty"
+              ? "border-amber-200 dark:border-amber-800/80 bg-amber-50/80 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200"
+              : "border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200"
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {backupAsyncState.status === "loading" && <RefreshCw className="h-4 w-4 animate-spin shrink-0 text-indigo-600 dark:text-indigo-400" />}
+            {backupAsyncState.status === "failed" && <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />}
+            {backupAsyncState.status === "empty" && <Info className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />}
+            {backupAsyncState.status === "success" && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />}
+            <span className="font-mono uppercase text-[10px] font-semibold px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 shrink-0">
+              {backupAsyncState.status}
+            </span>
+            <span className="font-medium">{backupAsyncState.message}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {backupAsyncState.retryJobId && (
+              <button
+                type="button"
+                onClick={() => handleRunBackupJob(backupAsyncState.retryJobId!)}
+                disabled={isExecuting !== null}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold shadow-2xs transition cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3 w-3 ${isExecuting ? "animate-spin" : ""}`} />
+                <span>Retry Backup</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setBackupAsyncState({ status: "idle", message: null, retryJobId: null })}
+              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 transition cursor-pointer"
+              title="Dismiss notification"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Backup Jobs Content */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

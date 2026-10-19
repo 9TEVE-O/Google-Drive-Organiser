@@ -34,7 +34,11 @@ export default function GoogleDocViewerModal({
   const [appendText, setAppendText] = useState("");
   const [showConfirmAppend, setShowConfirmAppend] = useState(false);
   const [isSavingAppend, setIsSavingAppend] = useState(false);
+  const [appendError, setAppendError] = useState<string | null>(null);
   const [copyFeedback, setCopyFeedback] = useState(false);
+
+  const [appendSuccess, setAppendSuccess] = useState<string | null>(null);
+  const [reloadTrigger, setReloadTrigger] = useState(0);
 
   useEffect(() => {
     if (!isOpen || !documentId || !token) {
@@ -42,6 +46,7 @@ export default function GoogleDocViewerModal({
       setLoadError(null);
       setAppendText("");
       setShowConfirmAppend(false);
+      setAppendSuccess(null);
       return;
     }
 
@@ -67,7 +72,7 @@ export default function GoogleDocViewerModal({
     return () => {
       isMounted = false;
     };
-  }, [isOpen, documentId, token]);
+  }, [isOpen, documentId, token, reloadTrigger]);
 
   if (!isOpen || !documentId) return null;
 
@@ -75,6 +80,8 @@ export default function GoogleDocViewerModal({
     if (!token || !documentId || !appendText.trim()) return;
 
     setIsSavingAppend(true);
+    setAppendError(null);
+    setAppendSuccess(null);
     try {
       await appendGoogleDocText(token, documentId, appendText);
       if (addLog) {
@@ -88,13 +95,15 @@ export default function GoogleDocViewerModal({
       // Reload document content
       const updated = await getGoogleDoc(token, documentId);
       setDocContent(updated);
+      setAppendSuccess(`Appended ${appendText.length} characters to Google Doc successfully.`);
       setAppendText("");
       setIsAppending(false);
       setShowConfirmAppend(false);
       if (onRefresh) await onRefresh();
     } catch (err: any) {
       console.error("Failed to append to Google Doc:", err);
-      alert(`Error appending text: ${err?.message || "Unknown error"}`);
+      setAppendError(err?.message || "Unknown error occurred while appending text.");
+      setShowConfirmAppend(false);
     } finally {
       setIsSavingAppend(false);
     }
@@ -242,21 +251,65 @@ export default function GoogleDocViewerModal({
             </div>
           )}
 
-          {loadError && (
-            <div className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2.5">
-              <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-semibold">Unable to load document contents</p>
-                <p className="text-[11px] mt-0.5 text-rose-700 dark:text-rose-300">{loadError}</p>
-                <a
-                  href={externalDocUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-medium underline text-blue-600 dark:text-blue-400 mt-2"
-                >
-                  Open in Google Docs Web Editor instead <ExternalLink className="h-3 w-3" />
-                </a>
+            {appendSuccess && (
+              <div role="status" className="p-3 mb-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-200 text-xs flex items-center gap-2">
+                <Check className="h-4 w-4 text-emerald-600 shrink-0" />
+                <p>{appendSuccess}</p>
+                <button onClick={() => setAppendSuccess(null)} className="ml-auto text-emerald-500 hover:text-emerald-700 cursor-pointer">
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
+            )}
+
+            {appendError && (
+              <div role="alert" className="p-3 mb-4 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 text-rose-800 dark:text-rose-200 text-xs flex flex-wrap items-center justify-between gap-2 animate-in slide-in-from-top-1 duration-200">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
+                  <p>{appendError}</p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleExecuteAppend}
+                    disabled={isSavingAppend}
+                    className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${isSavingAppend ? "animate-spin" : ""}`} />
+                    <span>Retry Append</span>
+                  </button>
+                  <button onClick={() => setAppendError(null)} className="p-1 text-rose-400 hover:text-rose-600 cursor-pointer">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {loadError && (
+            <div role="alert" className="p-4 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 text-rose-800 dark:text-rose-200 text-xs flex flex-wrap items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="h-4 w-4 text-rose-600 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold">Unable to load document contents</p>
+                  <p className="text-[11px] mt-0.5 text-rose-700 dark:text-rose-300">{loadError}</p>
+                  <a
+                    href={externalDocUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] font-medium underline text-blue-600 dark:text-blue-400 mt-2"
+                  >
+                    Open in Google Docs Web Editor instead <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReloadTrigger(prev => prev + 1)}
+                disabled={isLoading}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer shrink-0"
+              >
+                <RefreshCw className={`h-3 w-3 ${isLoading ? "animate-spin" : ""}`} />
+                <span>Retry Load</span>
+              </button>
             </div>
           )}
 

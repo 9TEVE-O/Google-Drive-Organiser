@@ -4,7 +4,8 @@ import {
   Play, Sparkles, FolderPlus, Compass, ArrowRight, CheckCircle2, 
   RefreshCw, ListChecks, HelpCircle, HardDrive, Cpu, AlertTriangle, Layers,
   Zap, FolderTree, ChevronRight, Check, ArrowUpRight, Folder, Sliders,
-  Archive, ShieldAlert, Move, Send, Clock, RotateCcw, Undo2, CheckSquare, Square
+  Archive, ShieldAlert, Move, Send, Clock, RotateCcw, Undo2, CheckSquare, Square,
+  AlertCircle, Info, X
 } from "lucide-react";
 import { createDriveFolder, createNestedDriveFolders, moveDriveFile, renameDriveFile, trashDriveFile } from "../lib/googleApi";
 import { evaluateFileDecision, getDecisionSystemMetrics } from "../lib/decisionEngine";
@@ -104,6 +105,11 @@ export default function SmartOrganizer({
   });
   const [undoBanner, setUndoBanner] = useState<{ message: string; count: number } | null>(null);
   const [isUndoing, setIsUndoing] = useState(false);
+  const [organizerAsyncState, setOrganizerAsyncState] = useState<{
+    status: "idle" | "loading" | "success" | "empty" | "failed";
+    message: string | null;
+    retryFn: (() => Promise<any>) | null;
+  }>({ status: "idle", message: null, retryFn: null });
 
   // Decisions grouped by Target Category for Step A: Grouped Interactive Staging Card
   const decisionsGroupedByCategory = React.useMemo(() => {
@@ -154,8 +160,13 @@ export default function SmartOrganizer({
     const meta = evaluateFileDecision(file, rules);
     if (!meta.decision || meta.decision.decisionType === "verified") return;
     setExecutingSingleId(file.id);
+    const targetFolder = meta.decision.targetFolder || "General";
+    setOrganizerAsyncState({
+      status: "loading",
+      message: `Relocating "${file.name}" to /${targetFolder}...`,
+      retryFn: null
+    });
     try {
-      const targetFolder = meta.decision.targetFolder || "General";
       let targetId = "root";
 
       const existing = files.find(f => f.mimeType === "application/vnd.google-apps.folder" && f.name.toLowerCase() === targetFolder.toLowerCase());
@@ -172,9 +183,19 @@ export default function SmartOrganizer({
 
       addLog("move", `Autonomous Decision Executed: Relocated "${file.name}" to /${targetFolder}`, meta.decision.rationale);
       await onRefresh();
+      setOrganizerAsyncState({
+        status: "success",
+        message: `Relocated "${file.name}" to /${targetFolder}.`,
+        retryFn: null
+      });
     } catch (err: any) {
       console.warn("Single triage notice:", err);
       addLog("move", `Triage notice for "${file.name}": ${err.message || "Failed"}`);
+      setOrganizerAsyncState({
+        status: "failed",
+        message: `Failed to relocate "${file.name}" to /${targetFolder}: ${err.message || "Google Drive API error"}`,
+        retryFn: () => handleExecuteSingleTriage(file)
+      });
     } finally {
       setExecutingSingleId(null);
     }
@@ -370,8 +391,20 @@ export default function SmartOrganizer({
 
   // Scan items using Gemini AI
   const handleAnalyzeFiles = async () => {
-    if (files.length === 0) return;
+    if (files.length === 0) {
+      setOrganizerAsyncState({
+        status: "empty",
+        message: "No Drive files available to analyse.",
+        retryFn: null
+      });
+      return;
+    }
     setIsClassifying(true);
+    setOrganizerAsyncState({
+      status: "loading",
+      message: `Cataloguing and analysing ${Math.min(files.length, 30)} Drive file(s) with Gemini...`,
+      retryFn: null
+    });
     try {
       // Pick top files for smart analysis
       const filesToSend = files.slice(0, 30).map(f => ({
@@ -382,6 +415,7 @@ export default function SmartOrganizer({
       }));
 
       let data: any = null;
+      let upstreamError: string | null = null;
       try {
         const res = await geminiFetch("/api/gemini/analyze", {
           method: "POST",
@@ -393,17 +427,29 @@ export default function SmartOrganizer({
         if (text && (text.startsWith("{") || text.startsWith("["))) {
           data = JSON.parse(text);
         } else {
+          upstreamError = `HTTP ${res.status} non-JSON response`;
           console.warn("API /api/gemini/analyze returned non-JSON response:", text.slice(0, 120));
         }
-      } catch (fetchErr) {
+      } catch (fetchErr: any) {
+        upstreamError = fetchErr?.message || "Network error";
         console.warn("Fetch /api/gemini/analyze network error:", fetchErr);
       }
 
       let analysisList: DriveAnalysisResult[] = [];
       if (data && data.success && Array.isArray(data.analysis)) {
         analysisList = data.analysis;
+        setOrganizerAsyncState({
+          status: analysisList.length === 0 ? "empty" : "success",
+          message: `Completed AI cataloguing analysis for ${analysisList.length} file(s).`,
+          retryFn: null
+        });
       } else {
         analysisList = generateClientFallbackAnalysis(filesToSend);
+        setOrganizerAsyncState({
+          status: "failed",
+          message: `AI analysis endpoint unreachable (${upstreamError || data?.error || "Fallback active"}). Applied deterministic rule-based classification to ${analysisList.length} file(s).`,
+          retryFn: handleAnalyzeFiles
+        });
       }
 
       setAnalysisResults(analysisList);
@@ -422,6 +468,11 @@ export default function SmartOrganizer({
     } catch (e: any) {
       addLog("organize", "Analysis note: " + (e.message || "Applied resilient analysis."));
       console.error("Analysis:", e);
+      setOrganizerAsyncState({
+        status: "failed",
+        message: `File analysis failed: ${e.message || "Unexpected error"}`,
+        retryFn: handleAnalyzeFiles
+      });
     } finally {
       setIsClassifying(false);
     }
@@ -429,8 +480,20 @@ export default function SmartOrganizer({
 
   // Generate automated movement layout plan from Gemini (Pipeline Step 2: Gemini Triage)
   const handleGenerateSortPlan = async (limitCount = 25): Promise<OrganizationPlan | null> => {
-    if (files.length === 0) return null;
+    if (files.length === 0) {
+      setOrganizerAsyncState({
+        status: "empty",
+        message: "No Drive files available to generate a triage sort plan.",
+        retryFn: null
+      });
+      return null;
+    }
     setIsPlanning(true);
+    setOrganizerAsyncState({
+      status: "loading",
+      message: `Generating taxonomy organisation plan for up to ${limitCount} file(s)...`,
+      retryFn: null
+    });
     try {
       // Pick unfiled files or candidates bounded by limitCount
       const candidateFiles = files.filter(f => f.mimeType !== "application/vnd.google-apps.folder");
@@ -447,6 +510,7 @@ export default function SmartOrganizer({
         .map(f => ({ id: f.id, name: f.name }));
 
       let data: any = null;
+      let upstreamError: string | null = null;
       try {
         const res = await geminiFetch("/api/gemini/organize-plan", {
           method: "POST",
@@ -458,9 +522,11 @@ export default function SmartOrganizer({
         if (text && text.includes("{")) {
           data = JSON.parse(text);
         } else {
+          upstreamError = `HTTP ${res.status} non-JSON response`;
           console.warn("API /api/gemini/organize-plan returned non-JSON response:", text.slice(0, 120));
         }
-      } catch (fetchErr) {
+      } catch (fetchErr: any) {
+        upstreamError = fetchErr?.message || "Network error";
         console.warn("Fetch /api/gemini/organize-plan network error:", fetchErr);
       }
 
@@ -473,12 +539,14 @@ export default function SmartOrganizer({
           : (Array.isArray(data.decisions) ? data.decisions : []);
 
         if (decisionsArray.length > 0) {
+          // H-03: Ensure we pick the correct summary object or derive it if missing
+          const rawSummary = data.plan.summary || data.summary || {};
           const triage: TriagePlan = {
-            summary: (data.plan.summary && typeof data.plan.summary === "object") ? data.plan.summary : {
-              totalAnalyzed: decisionsArray.length,
-              relocateCount: decisionsArray.filter(d => d.action === "relocate").length,
-              archiveCount: decisionsArray.filter(d => d.action === "archive").length,
-              protectCount: decisionsArray.filter(d => d.action === "protect").length
+            summary: {
+              totalAnalyzed: typeof rawSummary.totalAnalyzed === 'number' ? rawSummary.totalAnalyzed : decisionsArray.length,
+              relocateCount: typeof rawSummary.relocateCount === 'number' ? rawSummary.relocateCount : decisionsArray.filter(d => d.action === "relocate").length,
+              archiveCount: typeof rawSummary.archiveCount === 'number' ? rawSummary.archiveCount : decisionsArray.filter(d => d.action === "archive").length,
+              protectCount: typeof rawSummary.protectCount === 'number' ? rawSummary.protectCount : decisionsArray.filter(d => d.action === "protect").length
             },
             decisions: decisionsArray.map(d => ({
               ...d,
@@ -508,6 +576,11 @@ export default function SmartOrganizer({
         setSelectedReminderIds(initialReminders);
 
         addLog("organize", `Triage plan generated for ${filesToSend.length} files.`, `Bound to 6 canonical categories.`);
+        setOrganizerAsyncState({
+          status: "success",
+          message: `Generated AI organisation plan for ${filesToSend.length} file(s). Review proposed actions below.`,
+          retryFn: null
+        });
         return data.plan;
       }
 
@@ -518,6 +591,11 @@ export default function SmartOrganizer({
       setSelectedDecisionIds(new Set(fallbackResult.triage.decisions.map(d => d.fileId)));
       setSelectedActionIds(new Set(fallbackResult.plan.proposedActions.map(a => a.fileId)));
       addLog("organize", `Proposed deterministic Drive Organisation plan (client fallback)`, fallbackResult.plan.summary);
+      setOrganizerAsyncState({
+        status: "failed",
+        message: `AI planner service unavailable (${upstreamError || data?.error || "Fallback triggered"}). Generated deterministic rule-based plan for ${filesToSend.length} file(s).`,
+        retryFn: () => handleGenerateSortPlan(limitCount)
+      });
       return fallbackResult.plan;
     } catch (e: any) {
       console.warn("Plan generation fallback activated:", e);
@@ -527,6 +605,11 @@ export default function SmartOrganizer({
       setSelectedDecisionIds(new Set(fallbackResult.triage.decisions.map(d => d.fileId)));
       setSelectedActionIds(new Set(fallbackResult.plan.proposedActions.map(a => a.fileId)));
       addLog("organize", "Proposed deterministic Drive Organisation plan (error fallback)", fallbackResult.plan.summary);
+      setOrganizerAsyncState({
+        status: "failed",
+        message: `Plan generation encountered an error (${e.message || "Unexpected error"}). Loaded deterministic fallback plan.`,
+        retryFn: () => handleGenerateSortPlan(limitCount)
+      });
       return fallbackResult.plan;
     } finally {
       setIsPlanning(false);
@@ -662,10 +745,20 @@ export default function SmartOrganizer({
       setTriagePlan(null);
       setOrgPlan(null);
       await onRefresh();
+      setOrganizerAsyncState({
+        status: "success",
+        message: `Staged batch complete: Moved ${successCount} file(s) into canonical directories.`,
+        retryFn: null
+      });
     } catch (e: any) {
       console.error("Batch execution failed:", e);
       setExecutionLog(prev => [...prev, `❌ Batch Execution Error: ${e.message}`]);
       addLog("organize", "Batch execution interrupted: " + e.message);
+      setOrganizerAsyncState({
+        status: "failed",
+        message: `Staged batch execution failed: ${e.message || "Google Drive API error"}`,
+        retryFn: handleExecuteApprovedMoves
+      });
     } finally {
       setIsExecuting(false);
     }
@@ -684,10 +777,20 @@ export default function SmartOrganizer({
 
     if (!snapshot || !snapshot.moves || snapshot.moves.length === 0) {
       addLog("organize", "No previous undo snapshot found.");
+      setOrganizerAsyncState({
+        status: "empty",
+        message: "No rollback snapshot is currently available to undo.",
+        retryFn: null
+      });
       return;
     }
 
     setIsUndoing(true);
+    setOrganizerAsyncState({
+      status: "loading",
+      message: `Restoring ${snapshot.moves.length} file(s) to original locations...`,
+      retryFn: null
+    });
     setExecutionLog(prev => [...prev, `[UNDO INIT] Restoring ${snapshot.moves.length} files to original locations...`]);
     let restored = 0;
     let localFilesState = [...files];
@@ -728,9 +831,19 @@ export default function SmartOrganizer({
       });
       addLog("organize", `Rollback executed: Restored ${restored} files to original locations.`);
       await onRefresh();
+      setOrganizerAsyncState({
+        status: "success",
+        message: `Rollback complete: Restored ${restored} file(s) to their original parent folders.`,
+        retryFn: null
+      });
     } catch (e: any) {
       console.error("Undo batch failed:", e);
       addLog("organize", "Undo batch interrupted: " + e.message);
+      setOrganizerAsyncState({
+        status: "failed",
+        message: `Rollback interrupted: ${e.message || "Google Drive API error"}`,
+        retryFn: handleUndoLastBatch
+      });
     } finally {
       setIsUndoing(false);
     }
@@ -739,9 +852,21 @@ export default function SmartOrganizer({
   // Verification helper: Move 1 test file into Archives & Backups and test UndoSnapshot
   const handleTestMoveSingleFile = async () => {
     const fileToTest = files.find(f => f.mimeType !== "application/vnd.google-apps.folder") || files[0];
-    if (!fileToTest) return;
+    if (!fileToTest) {
+      setOrganizerAsyncState({
+        status: "empty",
+        message: "No eligible file available for single-file undo verification.",
+        retryFn: null
+      });
+      return;
+    }
 
     setIsExecuting(true);
+    setOrganizerAsyncState({
+      status: "loading",
+      message: `Moving test file "${fileToTest.name}" to /Archives & Backups...`,
+      retryFn: null
+    });
     try {
       let archiveFolderId = "root";
       const existing = files.find(f => f.mimeType === "application/vnd.google-apps.folder" && f.name === "Archives & Backups");
@@ -778,9 +903,19 @@ export default function SmartOrganizer({
         count: 1
       });
       await onRefresh();
+      setOrganizerAsyncState({
+        status: "success",
+        message: `Test move succeeded: "${fileToTest.name}" relocated to /Archives & Backups with active undo snapshot.`,
+        retryFn: null
+      });
     } catch (err: any) {
       console.error("Test move error:", err);
       addLog("move", `Test move error: ${err.message}`);
+      setOrganizerAsyncState({
+        status: "failed",
+        message: `Test move failed for "${fileToTest.name}": ${err.message || "Google Drive API error"}`,
+        retryFn: handleTestMoveSingleFile
+      });
     } finally {
       setIsExecuting(false);
     }
@@ -1038,10 +1173,20 @@ export default function SmartOrganizer({
       setOrgPlan(null);
       setTriagePlan(null);
       await onRefresh();
+      setOrganizerAsyncState({
+        status: "success",
+        message: `Executed ${successCount} taxonomy action(s) across ${foldersToResolve.length} directory path(s).`,
+        retryFn: null
+      });
     } catch (e: any) {
       setExecutionLog(prev => [...prev, `❌ Taxonomy Execution Error: ${e.message}`]);
       addLog("organize", "One-Click Taxonomy interrupted: " + e.message);
       console.error("One-Click Taxonomy interrupted:", e);
+      setOrganizerAsyncState({
+        status: "failed",
+        message: `Taxonomy execution interrupted: ${e.message || "Google Drive API error"}`,
+        retryFn: () => handleExecutePlanAction(targetPlan)
+      });
     } finally {
       setIsExecuting(false);
     }
@@ -1179,6 +1324,55 @@ export default function SmartOrganizer({
         </div>
 
       </div>
+
+      {/* Inline Smart Organizer Async Status & Retry Feedback */}
+      {organizerAsyncState.status !== "idle" && organizerAsyncState.message && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`rounded-xl border px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 ${
+            organizerAsyncState.status === "failed"
+              ? "border-rose-200 dark:border-rose-800/80 bg-rose-50/90 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+              : organizerAsyncState.status === "loading"
+              ? "border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/80 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200"
+              : organizerAsyncState.status === "empty"
+              ? "border-amber-200 dark:border-amber-800/80 bg-amber-50/80 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200"
+              : "border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200"
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {organizerAsyncState.status === "loading" && <RefreshCw className="h-4 w-4 animate-spin shrink-0 text-indigo-600 dark:text-indigo-400" />}
+            {organizerAsyncState.status === "failed" && <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />}
+            {organizerAsyncState.status === "empty" && <Info className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />}
+            {organizerAsyncState.status === "success" && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />}
+            <span className="font-mono uppercase text-[10px] font-semibold px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 shrink-0">
+              {organizerAsyncState.status}
+            </span>
+            <span className="font-medium">{organizerAsyncState.message}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {organizerAsyncState.retryFn && (
+              <button
+                type="button"
+                onClick={() => organizerAsyncState.retryFn?.()}
+                disabled={isClassifying || isPlanning || isExecuting || isUndoing}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold shadow-2xs transition cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>Retry Action</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setOrganizerAsyncState({ status: "idle", message: null, retryFn: null })}
+              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 transition cursor-pointer"
+              title="Dismiss notification"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Completion Success Notification */}
       {lastExecutionStats && (

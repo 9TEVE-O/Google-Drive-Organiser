@@ -3,7 +3,7 @@ import {
   Folder, File, FileText, Plus, Search, ArrowLeft, Edit3, 
   ExternalLink, Move, ChevronRight, Filter, PlusCircle, Check, X, RefreshCw, Eye,
   FileSpreadsheet, Zap, CheckCircle2, Archive, ShieldAlert, Layers, Bell,
-  FolderSearch
+  FolderSearch, AlertCircle, Info
 } from "lucide-react";
 import { DriveFile, ActivityLog } from "../types";
 import { 
@@ -105,10 +105,36 @@ export default function DriveBrowser({
   const [bulkTagValue, setBulkTagValue] = useState("");
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [browserAsyncState, setBrowserAsyncState] = useState<{
+    status: "idle" | "loading" | "success" | "empty" | "failed";
+    message: string | null;
+    retryFn: (() => Promise<void>) | null;
+  }>({ status: "idle", message: null, retryFn: null });
+  const [editLoadError, setEditLoadError] = useState<string | null>(null);
 
   const handleUploadFiles = async (fileList: FileList) => {
-    if (!token) return;
+    if (!token) {
+      setBrowserAsyncState({
+        status: "failed",
+        message: "Upload failed: Please connect your Google Drive account first.",
+        retryFn: null
+      });
+      return;
+    }
+    if (fileList.length === 0) {
+      setBrowserAsyncState({
+        status: "empty",
+        message: "No files were selected for upload.",
+        retryFn: null
+      });
+      return;
+    }
     setIsUploading(true);
+    setBrowserAsyncState({
+      status: "loading",
+      message: `Uploading ${fileList.length} file(s) to Google Drive...`,
+      retryFn: null
+    });
     try {
       let count = 0;
       for (let i = 0; i < fileList.length; i++) {
@@ -118,8 +144,18 @@ export default function DriveBrowser({
       }
       addLog("create", `Uploaded ${count} file${count === 1 ? "" : "s"} to Drive`, `Folder: ${breadcrumbs[breadcrumbs.length - 1]?.name || 'My Drive'}`);
       await onRefresh();
+      setBrowserAsyncState({
+        status: "success",
+        message: `Uploaded ${count} file${count === 1 ? "" : "s"} to "${breadcrumbs[breadcrumbs.length - 1]?.name || "My Drive"}".`,
+        retryFn: null
+      });
     } catch (err: any) {
       addLog("modify", `Upload failed: ${err.message || "Unknown error"}`);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `File upload failed: ${err.message || "Google Drive API error"}`,
+        retryFn: () => handleUploadFiles(fileList)
+      });
     } finally {
       setIsUploading(false);
     }
@@ -148,9 +184,21 @@ export default function DriveBrowser({
   };
 
   const handleBulkExecuteSelectedDecisions = async () => {
-    if (selectedFileIds.size === 0) return;
+    if (selectedFileIds.size === 0) {
+      setBrowserAsyncState({
+        status: "empty",
+        message: "No files selected for batch decision execution.",
+        retryFn: null
+      });
+      return;
+    }
     const selectedFiles = files.filter(f => selectedFileIds.has(f.id));
     setIsBatchExecuting(true);
+    setBrowserAsyncState({
+      status: "loading",
+      message: `Executing recommended actions on ${selectedFiles.length} selected file(s)...`,
+      retryFn: null
+    });
     try {
       const folderCache: { [name: string]: string } = {};
       files.forEach(f => {
@@ -159,6 +207,7 @@ export default function DriveBrowser({
         }
       });
       let moved = 0;
+      const failedNames: string[] = [];
       for (const file of selectedFiles) {
         const meta = getFileMetadata(file);
         const targetFolderName = meta.decision?.targetFolder || "General";
@@ -178,6 +227,7 @@ export default function DriveBrowser({
             moved++;
           } catch (e) {
             console.warn(`Could not relocate ${file.name}:`, e);
+            failedNames.push(file.name);
           }
         } else {
           moved++;
@@ -186,8 +236,26 @@ export default function DriveBrowser({
       addLog("organize", `Executed decisions on ${moved} selected file${moved === 1 ? '' : 's'}.`);
       setSelectedFileIds(new Set());
       await onRefresh();
+      if (failedNames.length > 0) {
+        setBrowserAsyncState({
+          status: "failed",
+          message: `Batch execution finished with errors (${moved}/${selectedFiles.length} succeeded; failed: ${failedNames.slice(0, 3).join(", ")}).`,
+          retryFn: handleBulkExecuteSelectedDecisions
+        });
+      } else {
+        setBrowserAsyncState({
+          status: "success",
+          message: `Successfully executed decisions on ${moved} selected file(s).`,
+          retryFn: null
+        });
+      }
     } catch (e: any) {
       console.error("Bulk execute error:", e);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Bulk decision execution failed: ${e.message || "Google Drive API error"}`,
+        retryFn: handleBulkExecuteSelectedDecisions
+      });
     } finally {
       setIsBatchExecuting(false);
     }
@@ -401,19 +469,35 @@ export default function DriveBrowser({
 
   // Handle Creating a new folder
   const handleCreateFolderAction = async () => {
-    if (!token || !newFolderName) return;
+    if (!token || !newFolderName.trim()) return;
+    const folderToCreate = newFolderName.trim();
     try {
       setIsSavingEdit(true);
+      setBrowserAsyncState({
+        status: "loading",
+        message: `Creating folder "${folderToCreate}" in Google Drive...`,
+        retryFn: null
+      });
       const parentDir = currentFolderId === "root" ? undefined : currentFolderId;
-      const result = await createDriveFolder(token, newFolderName, parentDir);
+      const result = await createDriveFolder(token, folderToCreate, parentDir);
       
-      addLog("create", `Created folder named "${newFolderName}"`, `Folder ID: ${result.id}`);
+      addLog("create", `Created folder named "${folderToCreate}"`, `Folder ID: ${result.id}`);
       setNewFolderName("");
       setShowFolderModal(false);
       await onRefresh();
+      setBrowserAsyncState({
+        status: "success",
+        message: `Created folder "${folderToCreate}" successfully.`,
+        retryFn: null
+      });
     } catch (e: any) {
       addLog("modify", "Error creating folder: " + e.message);
       console.error("Error creating folder:", e);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Failed to create folder "${folderToCreate}": ${e.message || "Google Drive API error"}`,
+        retryFn: handleCreateFolderAction
+      });
     } finally {
       setIsSavingEdit(false);
     }
@@ -422,33 +506,54 @@ export default function DriveBrowser({
   // Handle Creating a new document (supports Google Docs API and text documents)
   const handleCreateDocumentAction = async () => {
     if (!token || !newDocName.trim()) return;
+    const docNameToCreate = newDocName.trim();
     try {
       setIsSavingEdit(true);
+      setBrowserAsyncState({
+        status: "loading",
+        message: `Creating ${newDocFormat === "google_doc" ? "Google Doc" : "text document"} "${docNameToCreate}"...`,
+        retryFn: null
+      });
       const parentDir = currentFolderId === "root" ? undefined : currentFolderId;
 
       if (newDocFormat === "google_doc") {
-        const result = await createGoogleDoc(token, newDocName.trim(), newDocContent, parentDir);
+        const result = await createGoogleDoc(token, docNameToCreate, newDocContent, parentDir);
         addLog("create", `Created Google Doc "${result.title}" via Docs API`, `Document ID: ${result.documentId}`);
         setNewDocName("");
         setNewDocContent("");
         setShowDocModal(false);
         await onRefresh();
+        setBrowserAsyncState({
+          status: "success",
+          message: `Created Google Doc "${result.title}" successfully.`,
+          retryFn: null
+        });
 
         // Immediately open the newly created Google Doc in the viewer modal
         setSelectedDocId(result.documentId);
         setSelectedDocTitle(result.title);
         setIsDocViewerOpen(true);
       } else {
-        const result = await createDriveTextFile(token, newDocName.trim(), newDocContent, parentDir);
-        addLog("create", `Created direct text document "${newDocName.trim()}"`, `Document ID: ${result.id}`);
+        const result = await createDriveTextFile(token, docNameToCreate, newDocContent, parentDir);
+        addLog("create", `Created direct text document "${docNameToCreate}"`, `Document ID: ${result.id}`);
         setNewDocName("");
         setNewDocContent("");
         setShowDocModal(false);
         await onRefresh();
+        setBrowserAsyncState({
+          status: "success",
+          message: `Created text document "${docNameToCreate}" successfully.`,
+          retryFn: null
+        });
       }
     } catch (e: any) {
       addLog("modify", "Error creating document: " + e.message);
       console.error("Error creating document:", e);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Failed to create document "${docNameToCreate}": ${e.message || "Google Drive API error"}`,
+        retryFn: handleCreateDocumentAction
+      });
     } finally {
       setIsSavingEdit(false);
     }
@@ -456,13 +561,30 @@ export default function DriveBrowser({
 
   // Launch Google Picker client modal
   const handleLaunchGooglePicker = async () => {
-    if (!token) return;
+    if (!token) {
+      setBrowserAsyncState({
+        status: "failed",
+        message: "Cannot open Google Picker: Please connect your Google Workspace account.",
+        retryFn: null
+      });
+      return;
+    }
     setIsLaunchingPicker(true);
+    setBrowserAsyncState({
+      status: "loading",
+      message: "Opening Google Picker...",
+      retryFn: null
+    });
     try {
       await openGooglePicker({
         token,
         onPick: (picked) => {
           addLog("create", `Selected file via Google Picker: "${picked.name}"`, `ID: ${picked.id} · MIME: ${picked.mimeType}`);
+          setBrowserAsyncState({
+            status: "success",
+            message: `Selected "${picked.name}" via Google Picker.`,
+            retryFn: null
+          });
           if (picked.mimeType === "application/vnd.google-apps.document") {
             setSelectedDocId(picked.id);
             setSelectedDocTitle(picked.name);
@@ -472,12 +594,17 @@ export default function DriveBrowser({
           }
         },
         onCancel: () => {
-          // Picker closed without selection
+          setBrowserAsyncState({ status: "idle", message: null, retryFn: null });
         }
       });
     } catch (err: any) {
       console.warn("Google Picker launch notice:", err);
       addLog("modify", `Google Picker status: ${err?.message || "Unavailable"}`);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Google Picker error: ${err?.message || "Unable to initialize Google Picker widget."}`,
+        retryFn: handleLaunchGooglePicker
+      });
     } finally {
       setIsLaunchingPicker(false);
     }
@@ -486,18 +613,34 @@ export default function DriveBrowser({
   // Handle Creating a new spreadsheet
   const handleCreateSheetAction = async () => {
     if (!token || !newSheetTitle.trim()) return;
+    const titleToCreate = newSheetTitle.trim();
     try {
       setIsSavingEdit(true);
+      setBrowserAsyncState({
+        status: "loading",
+        message: `Creating Google Sheet "${titleToCreate}"...`,
+        retryFn: null
+      });
       const parentDir = currentFolderId === "root" ? undefined : currentFolderId;
-      const result = await createSpreadsheet(token, newSheetTitle.trim(), "Sheet1", undefined, parentDir);
+      const result = await createSpreadsheet(token, titleToCreate, "Sheet1", undefined, parentDir);
 
-      addLog("sheet", `Created Google Sheet "${newSheetTitle.trim()}"`, `Spreadsheet ID: ${result.spreadsheetId}`);
+      addLog("sheet", `Created Google Sheet "${titleToCreate}"`, `Spreadsheet ID: ${result.spreadsheetId}`);
       setNewSheetTitle("");
       setShowSheetModal(false);
       await onRefresh();
+      setBrowserAsyncState({
+        status: "success",
+        message: `Created Google Sheet "${titleToCreate}" successfully.`,
+        retryFn: null
+      });
     } catch (e: any) {
       addLog("sheet", "Error creating Google Sheet: " + e.message);
       console.error("Error creating sheet:", e);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Failed to create Google Sheet "${titleToCreate}": ${e.message || "Google Sheets API error"}`,
+        retryFn: handleCreateSheetAction
+      });
     } finally {
       setIsSavingEdit(false);
     }
@@ -505,15 +648,24 @@ export default function DriveBrowser({
 
   // Trigger Edit modal and fetch live file content
   const handleStartEdit = async (file: DriveFile) => {
-    if (!token) return;
+    if (!token) {
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Cannot edit "${file.name}": Google Drive token is missing.`,
+        retryFn: null
+      });
+      return;
+    }
     setEditingFile(file);
+    setEditLoadError(null);
     setIsLoadingContent(true);
     try {
       const content = await getDriveTextFileContent(token, file.id);
       setEditContent(content);
     } catch (e: any) {
       setEditContent("");
-      console.error("Couldn't retrieve document contents. Editing as blank text.", e);
+      setEditLoadError(e?.message || "Could not retrieve document text from Google Drive.");
+      console.error("Couldn't retrieve document contents.", e);
     } finally {
       setIsLoadingContent(false);
     }
@@ -522,16 +674,29 @@ export default function DriveBrowser({
   // Save edited document contents on Google Drive
   const handleSaveEditAction = async () => {
     if (!token || !editingFile) return;
+    const targetFile = editingFile;
     try {
       setIsSavingEdit(true);
-      await updateDriveTextFile(token, editingFile.id, editContent);
-      addLog("modify", `Edited content of file "${editingFile.name}"`, `File ID: ${editingFile.id}`);
+      setEditLoadError(null);
+      await updateDriveTextFile(token, targetFile.id, editContent);
+      addLog("modify", `Edited content of file "${targetFile.name}"`, `File ID: ${targetFile.id}`);
       setEditingFile(null);
       setEditContent("");
       await onRefresh();
+      setBrowserAsyncState({
+        status: "success",
+        message: `Saved changes to "${targetFile.name}".`,
+        retryFn: null
+      });
     } catch (e: any) {
       addLog("modify", "Error saving edits: " + e.message);
       console.error("Error saving edits:", e);
+      setEditLoadError(`Failed to save changes: ${e.message || "Google Drive API error"}`);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Failed to save changes to "${targetFile.name}": ${e.message || "API error"}`,
+        retryFn: handleSaveEditAction
+      });
     } finally {
       setIsSavingEdit(false);
     }
@@ -540,21 +705,37 @@ export default function DriveBrowser({
   // Handle Moving a file
   const handleMoveFileAction = async (targetFolderId: string) => {
     if (!token || !movingFile) return;
+    const fileToMove = movingFile;
     try {
       setIsExecutingMove(true);
       const targetFolder = files.find(f => f.id === targetFolderId);
       const targetName = targetFolderId === "root" ? "My Drive Root" : (targetFolder?.name || "Folder");
+      setBrowserAsyncState({
+        status: "loading",
+        message: `Moving "${fileToMove.name}" into "${targetName}"...`,
+        retryFn: null
+      });
 
       // Check current parent
-      const currentParent = movingFile.parents?.[0];
+      const currentParent = fileToMove.parents?.[0];
 
-      await moveDriveFile(token, movingFile.id, targetFolderId, currentParent);
-      addLog("move", `Moved file "${movingFile.name}" into "${targetName}"`, `File ID: ${movingFile.id}`);
+      await moveDriveFile(token, fileToMove.id, targetFolderId, currentParent);
+      addLog("move", `Moved file "${fileToMove.name}" into "${targetName}"`, `File ID: ${fileToMove.id}`);
       setMovingFile(null);
       await onRefresh();
+      setBrowserAsyncState({
+        status: "success",
+        message: `Moved "${fileToMove.name}" into "${targetName}".`,
+        retryFn: null
+      });
     } catch (e: any) {
       addLog("move", "Error moving file: " + e.message);
       console.error("Error moving file:", e);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Failed to move "${fileToMove.name}": ${e.message || "Google Drive API error"}`,
+        retryFn: () => handleMoveFileAction(targetFolderId)
+      });
     } finally {
       setIsExecutingMove(false);
     }
@@ -564,8 +745,13 @@ export default function DriveBrowser({
   const handleExecuteSingleDecision = async (file: DriveFile, decision?: any) => {
     if (!decision || decision.decisionType === "verified") return;
     setExecutingFileId(file.id);
+    const targetFolderName = decision.targetFolder || "General";
+    setBrowserAsyncState({
+      status: "loading",
+      message: `Executing decision for "${file.name}" → /${targetFolderName}...`,
+      retryFn: null
+    });
     try {
-      const targetFolderName = decision.targetFolder || "General";
       let targetFolderId = "root";
 
       // Look up target folder or create it
@@ -597,9 +783,19 @@ export default function DriveBrowser({
 
       addLog("move", `Autonomous Decision Executed: Relocated "${file.name}" to /${targetFolderName}`, decision.rationale);
       await onRefresh();
+      setBrowserAsyncState({
+        status: "success",
+        message: `Relocated "${file.name}" to /${targetFolderName}.`,
+        retryFn: null
+      });
     } catch (err: any) {
       console.warn("Single decision execution notice:", err);
       addLog("move", `Decision notice for "${file.name}": ${err.message || "Failed to relocate"}`);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Failed to relocate "${file.name}" to /${targetFolderName}: ${err.message || "Google Drive API error"}`,
+        retryFn: () => handleExecuteSingleDecision(file, decision)
+      });
     } finally {
       setExecutingFileId(null);
     }
@@ -614,7 +810,20 @@ export default function DriveBrowser({
         return meta.decision && (meta.decision.decisionType === "relocate" || meta.decision.decisionType === "archive");
       });
 
-      if (pendingFiles.length === 0) return;
+      if (pendingFiles.length === 0) {
+        setBrowserAsyncState({
+          status: "empty",
+          message: "No pending relocation or archival decisions require execution.",
+          retryFn: null
+        });
+        return;
+      }
+
+      setBrowserAsyncState({
+        status: "loading",
+        message: `Executing batch decisions across ${pendingFiles.length} file(s)...`,
+        retryFn: null
+      });
 
       const folderCache: { [name: string]: string } = {};
       files.forEach(f => {
@@ -624,6 +833,7 @@ export default function DriveBrowser({
       });
 
       let moved = 0;
+      const failedNames: string[] = [];
       for (const file of pendingFiles) {
         const meta = getFileMetadata(file);
         const targetFolderName = meta.decision?.targetFolder || "General";
@@ -645,6 +855,7 @@ export default function DriveBrowser({
             moved++;
           } catch (e) {
             console.warn(`Could not relocate ${file.name}:`, e);
+            failedNames.push(file.name);
           }
         } else {
           moved++;
@@ -653,8 +864,26 @@ export default function DriveBrowser({
 
       addLog("organize", `Autonomous Decision Batch Executed: Organized ${moved} files into structured directories.`, `Processed ${pendingFiles.length} decision recommendations.`);
       await onRefresh();
+      if (failedNames.length > 0) {
+        setBrowserAsyncState({
+          status: "failed",
+          message: `Batch triage partially completed (${moved}/${pendingFiles.length} moved; failed: ${failedNames.slice(0, 3).join(", ")}).`,
+          retryFn: handleBatchExecuteDecisions
+        });
+      } else {
+        setBrowserAsyncState({
+          status: "success",
+          message: `Organised ${moved} file(s) into structured directories.`,
+          retryFn: null
+        });
+      }
     } catch (err: any) {
       console.error("Batch decision execution error:", err);
+      setBrowserAsyncState({
+        status: "failed",
+        message: `Batch decision execution failed: ${err.message || "Google Drive API error"}`,
+        retryFn: handleBatchExecuteDecisions
+      });
     } finally {
       setIsBatchExecuting(false);
     }
@@ -679,6 +908,55 @@ export default function DriveBrowser({
 
   return (
     <div className="space-y-4">
+      {/* Inline Drive Browser Async Status & Retry Feedback */}
+      {browserAsyncState.status !== "idle" && browserAsyncState.message && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`rounded-xl border px-4 py-3 text-xs flex flex-wrap items-center justify-between gap-3 ${
+            browserAsyncState.status === "failed"
+              ? "border-rose-200 dark:border-rose-800/80 bg-rose-50/90 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200"
+              : browserAsyncState.status === "loading"
+              ? "border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/80 dark:bg-indigo-950/40 text-indigo-800 dark:text-indigo-200"
+              : browserAsyncState.status === "empty"
+              ? "border-amber-200 dark:border-amber-800/80 bg-amber-50/80 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200"
+              : "border-emerald-200 dark:border-emerald-800/80 bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200"
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {browserAsyncState.status === "loading" && <RefreshCw className="h-4 w-4 animate-spin shrink-0 text-indigo-600 dark:text-indigo-400" />}
+            {browserAsyncState.status === "failed" && <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />}
+            {browserAsyncState.status === "empty" && <Info className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />}
+            {browserAsyncState.status === "success" && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />}
+            <span className="font-mono uppercase text-[10px] font-semibold px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 shrink-0">
+              {browserAsyncState.status}
+            </span>
+            <span className="font-medium">{browserAsyncState.message}</span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {browserAsyncState.retryFn && (
+              <button
+                type="button"
+                onClick={() => browserAsyncState.retryFn?.()}
+                disabled={isUploading || isSavingEdit || isExecutingMove || isBatchExecuting}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold shadow-2xs transition cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>Retry Action</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setBrowserAsyncState({ status: "idle", message: null, retryFn: null })}
+              className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/10 transition cursor-pointer"
+              title="Dismiss notification"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Autonomous Decision System Control Bar */}
       <div className="rounded-2xl border border-indigo-500/20 dark:border-indigo-500/30 bg-gradient-to-r from-indigo-900/10 via-purple-900/10 to-slate-900/10 dark:from-indigo-950/40 dark:via-purple-950/30 dark:to-slate-900/50 p-4 backdrop-blur-xl shadow-xs">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -1670,6 +1948,22 @@ export default function DriveBrowser({
               </div>
             ) : (
               <>
+                {editLoadError && (
+                  <div className="mb-3 rounded-xl border border-rose-200 dark:border-rose-800/80 bg-rose-50/90 dark:bg-rose-950/40 p-3 text-xs text-rose-800 dark:text-rose-200 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
+                      <span>{editLoadError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleStartEdit(editingFile)}
+                      className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer shrink-0"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      <span>Retry Load</span>
+                    </button>
+                  </div>
+                )}
                 <textarea
                   rows={10}
                   value={editContent}

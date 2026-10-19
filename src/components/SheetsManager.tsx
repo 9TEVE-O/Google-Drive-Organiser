@@ -69,18 +69,29 @@ export default function SheetsManager({
   // Export inventory state
   const [isExportingInventory, setIsExportingInventory] = useState(false);
   const [successNotification, setSuccessNotification] = useState<string | null>(null);
+  const [retryAction, setRetryAction] = useState<(() => Promise<void>) | null>(null);
+  const [sheetsAsyncStatus, setSheetsAsyncStatus] = useState<"idle" | "loading" | "success" | "empty" | "failed">("idle");
 
   // Fetch all spreadsheets from Google Drive
   const loadSpreadsheets = async () => {
     if (!token) return;
     setIsLoadingSheets(true);
     setErrorMsg(null);
+    setRetryAction(null);
+    setSheetsAsyncStatus("loading");
     try {
       const sheets = await listSpreadsheets(token);
       setSheetsList(sheets);
+      if (sheets.length === 0) {
+        setSheetsAsyncStatus("empty");
+      } else {
+        setSheetsAsyncStatus("success");
+      }
     } catch (err: any) {
       console.error("Error loading spreadsheets:", err);
       setErrorMsg(err.message || "Failed to load Google Sheets from Drive.");
+      setRetryAction(() => loadSpreadsheets);
+      setSheetsAsyncStatus("failed");
     } finally {
       setIsLoadingSheets(false);
     }
@@ -95,6 +106,7 @@ export default function SheetsManager({
     if (!token) return;
     setIsLoadingGrid(true);
     setGridError(null);
+    setSheetsAsyncStatus("loading");
     try {
       // 1. Fetch metadata if not loaded
       let meta = sheetMetadata;
@@ -113,10 +125,12 @@ export default function SheetsManager({
       // 2. Fetch grid values
       const values = await getSpreadsheetValues(token, sheet.id, validTab);
       setGridValues(values);
+      setSheetsAsyncStatus(values.length === 0 ? "empty" : "success");
     } catch (err: any) {
       console.error("Error loading sheet values:", err);
       setGridError(err.message || "Failed to retrieve sheet cell values.");
       setGridValues([]);
+      setSheetsAsyncStatus("failed");
     } finally {
       setIsLoadingGrid(false);
     }
@@ -204,6 +218,7 @@ export default function SheetsManager({
 
       addLog('sheet', `Created Google Sheet '${newSheetTitle.trim()}'`, `Spreadsheet ID: ${created.spreadsheetId}`);
       setSuccessNotification(`Google Sheet "${newSheetTitle.trim()}" created successfully!`);
+      setSheetsAsyncStatus("success");
       setShowCreateModal(false);
       setNewSheetTitle("");
       setSelectedTemplate("blank");
@@ -213,6 +228,7 @@ export default function SheetsManager({
     } catch (err: any) {
       console.error("Create sheet error:", err);
       setErrorMsg(err.message || "Failed to create Google Sheet.");
+      setSheetsAsyncStatus("failed");
     } finally {
       setIsCreatingSheet(false);
     }
@@ -223,17 +239,22 @@ export default function SheetsManager({
     if (!token) return;
     setIsExportingInventory(true);
     setErrorMsg(null);
+    setRetryAction(null);
+    setSheetsAsyncStatus("loading");
 
     const title = `Drive Organizer - Inventory (${new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })})`;
     try {
       const result = await exportDriveInventoryToSheet(token, title, files);
       addLog('sheet', `Exported Drive inventory (${files.length} items) to Google Sheet`, `Spreadsheet ID: ${result.spreadsheetId}`);
       setSuccessNotification(`Inventory successfully exported to "${title}"!`);
+      setSheetsAsyncStatus("success");
       await loadSpreadsheets();
       await onRefreshDrive();
     } catch (err: any) {
       console.error("Export inventory error:", err);
       setErrorMsg(err.message || "Failed to export Drive inventory to Google Sheet.");
+      setRetryAction(() => handleExportFullInventory);
+      setSheetsAsyncStatus("failed");
     } finally {
       setIsExportingInventory(false);
     }
@@ -349,9 +370,12 @@ export default function SheetsManager({
 
       {/* Notifications */}
       {successNotification && (
-        <div className="flex items-center justify-between rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 px-3.5 py-2.5 text-xs text-emerald-800 dark:text-emerald-300">
+        <div role="status" className="flex items-center justify-between rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 px-3.5 py-2.5 text-xs text-emerald-800 dark:text-emerald-300">
           <span className="font-medium flex items-center gap-2">
             <Check className="h-4 w-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+            <span className="font-mono uppercase text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/60">
+              {sheetsAsyncStatus === "empty" ? "empty" : "success"}
+            </span>
             {successNotification}
           </span>
           <button onClick={() => setSuccessNotification(null)} className="text-emerald-700 dark:text-emerald-400 hover:opacity-75 cursor-pointer">
@@ -361,14 +385,30 @@ export default function SheetsManager({
       )}
 
       {errorMsg && (
-        <div className="flex items-center justify-between rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 px-3.5 py-2.5 text-xs text-rose-800 dark:text-rose-300">
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 px-3.5 py-2.5 text-xs text-rose-800 dark:text-rose-300">
           <span className="font-medium flex items-center gap-2">
             <AlertCircle className="h-4 w-4 text-rose-600 dark:text-rose-400 shrink-0" />
+            <span className="font-mono uppercase text-[10px] font-semibold px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/60">
+              failed
+            </span>
             {errorMsg}
           </span>
-          <button onClick={() => setErrorMsg(null)} className="text-rose-700 dark:text-rose-400 hover:opacity-75 cursor-pointer">
-            <X className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {retryAction && (
+              <button
+                type="button"
+                onClick={() => retryAction()}
+                disabled={isLoadingSheets || isExportingInventory}
+                className="inline-flex items-center gap-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1 text-[11px] font-semibold transition cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>Retry Now</span>
+              </button>
+            )}
+            <button onClick={() => setErrorMsg(null)} className="text-rose-700 dark:text-rose-400 hover:opacity-75 cursor-pointer">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       )}
 

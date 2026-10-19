@@ -74,6 +74,27 @@ export const ChangePlanSchema: Schema = {
   },
   required: ["summary", "proposedActions"]
 };
+
+export interface ChangePlanPayload {
+  summary: string;
+  proposedActions: Array<{
+    fileId: string;
+    originalName: string;
+    proposedName: string;
+    currentParentId: string;
+    proposedFolderPath: string;
+    actionType: "MOVE" | "RENAME" | "MOVE_AND_RENAME" | "ARCHIVE" | "TRASH_DUPLICATE" | "SKIP";
+    confidence: number;
+    rationale: string;
+  }>;
+  proposedReminders?: Array<{
+    fileId: string;
+    title: string;
+    triggerDate: string;
+    rationale: string;
+  }>;
+}
+
 export const DRIVE_TRIAGE_SYSTEM_PROMPT = `
 You are the deterministic classification and relocation engine for Google Drive Organiser. Your job is to analyse unorganised file metadata and assign each file to one of six canonical project categories with a clear rationale.
 
@@ -164,3 +185,103 @@ export const TriageSchema: Schema = {
   },
   required: ["summary", "decisions"]
 };
+
+export interface TriageDecisionRecord {
+  fileId: string;
+  fileName: string;
+  targetCategory:
+    | "Financials & Billing"
+    | "Legal & Contracts"
+    | "Project Operations"
+    | "Marketing & Assets"
+    | "HR & Operations"
+    | "Archives & Backups";
+  action: "relocate" | "archive" | "protect" | "consolidate";
+  confidence: number;
+  urgency: "high" | "medium" | "low";
+  rationale: string;
+}
+
+export interface TriageResponsePayload {
+  summary: {
+    totalAnalyzed: number;
+    relocateCount: number;
+    archiveCount: number;
+    protectCount: number;
+  };
+  decisions: TriageDecisionRecord[];
+}
+
+export interface ComposeReportPayload {
+  subject: string;
+  htmlBody: string;
+}
+
+export const ComposeReportSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    subject: {
+      type: Type.STRING,
+      description: "An elegant, concise email subject line, e.g., 'Drive Companion: Automated Organization & Task Report'."
+    },
+    htmlBody: {
+      type: Type.STRING,
+      description: "Complete visually robust HTML code containing headers, paragraph descriptions, structured CSS rules, cards for metrics, and action breakdowns."
+    }
+  },
+  required: ["subject", "htmlBody"]
+};
+
+export interface FileSummaryPayload {
+  summary: string;
+  documentType: string;
+  keyPoints: string[];
+  suggestedActions: string[];
+  relevanceScore?: number;
+}
+
+export const FileSummarySchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    summary: {
+      type: Type.STRING,
+      description: "A concise 2-3 sentence overview explaining what this file is, its purpose, and value."
+    },
+    documentType: {
+      type: Type.STRING,
+      description: "Descriptive label (e.g., 'Financial Invoice', 'Design Specification', 'Meeting Agenda', 'Project Documentation', 'Media Graphic', 'Spreadsheet Dataset')."
+    },
+    keyPoints: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "2 to 4 key highlights, takeaways, or extracted information points."
+    },
+    suggestedActions: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "1 to 3 recommended next actions for managing or organizing this file."
+    },
+    relevanceScore: {
+      type: Type.INTEGER,
+      description: "Estimated relevance score 0-100 based on currency and importance."
+    }
+  },
+  required: ["summary", "documentType", "keyPoints", "suggestedActions"]
+};
+
+export interface ChatSuggestionsPayload {
+  suggestions: string[];
+}
+
+export const ChatSuggestionsSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    suggestions: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "Array of 4 actionable prompt suggestions."
+    }
+  },
+  required: ["suggestions"]
+};
+

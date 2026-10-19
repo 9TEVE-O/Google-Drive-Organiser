@@ -251,9 +251,10 @@ export const createNestedDriveFolders = async (
       continue;
     }
 
-    // Check if this folder already exists in Drive under currentParentId
+    // C-04: Check if this folder already exists in Drive under currentParentId (Sanitize Query)
     try {
-      const query = `mimeType = 'application/vnd.google-apps.folder' and name = '${segment.replace(/'/g, "\\'")}' and '${currentParentId}' in parents and trashed = false`;
+      const safeSegment = segment.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+      const query = `mimeType = 'application/vnd.google-apps.folder' and name = '${safeSegment}' and '${currentParentId}' in parents and trashed = false`;
       const checkRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)&supportsAllDrives=true`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -636,6 +637,37 @@ export const trashDriveFile = async (token: string, fileId: string): Promise<voi
   }
 };
 
+/**
+ * H-03: Real integration for duplication - Copies a file to a target destination
+ */
+export const copyDriveFile = async (
+  token: string,
+  fileId: string,
+  destFolderId: string,
+  newName?: string
+): Promise<any> => {
+  const body: any = {
+    parents: [destFolderId]
+  };
+  if (newName) body.name = newName;
+
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/copy?supportsAllDrives=true`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || "Failed to copy file.");
+  }
+
+  return response.json();
+};
+
 
 
 // ---------------------------------------------------------
@@ -783,11 +815,19 @@ export const deleteGoogleTask = async (token: string, listId: string, taskId: st
  * Send an HTML email message via Gmail API
  */
 export const sendGmailReport = async (token: string, toEmail: string, subject: string, htmlBody: string): Promise<any> => {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(toEmail)) {
+    throw new Error("Invalid recipient email address format.");
+  }
+
+  // C-04: Header Injection Prevention (Strip newlines)
+  const safeTo = toEmail.replace(/[\r\n]/g, "").trim();
+  const safeSubject = subject.replace(/[\r\n]/g, "").trim();
+
   const emailLines = [
-    `To: ${toEmail}`,
+    `To: ${safeTo}`,
     "Content-Type: text/html; charset=utf-8",
     "MIME-Version: 1.0",
-    `Subject: ${subject}`,
+    `Subject: ${safeSubject}`,
     "",
     htmlBody
   ];

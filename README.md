@@ -1,132 +1,135 @@
 # Drive Organizer
 
-Drive Organizer is a full-stack React + Express app for managing Google Drive files, Google Tasks, Gmail report delivery, and Gemini-powered productivity workflows from a single interface.
+Drive Organizer is a full-stack React 19 + Express production application for managing Google Drive files, autonomous folder triage, scheduled backups, Google Tasks & reminders, human-approved Gmail executive reports, and Gemini-powered productivity workflows.
 
-## What it does
+---
 
-- Browse Google Drive files and folders from the browser
-- Create folders, move files, and manage file metadata
-- Generate AI-assisted organization plans for Drive content
-- Configure backup jobs and review backup history
-- Sync Google Tasks and schedule reminders
-- Compose and send executive-style Gmail reports
-- Generate wallpapers and banners with Gemini image generation
-- Chat with Gemini using multiple role presets and supported models
+## Architecture Overview
 
-## Architecture
+Drive Organizer uses a **hybrid edge-and-proxy architecture** that decouples the UI layer from the AI service client:
 
-The app uses a split architecture:
+- **Direct Workspace Domain (Client-Side):** Browser sessions authenticate via Firebase Auth and communicate directly with Google Workspace APIs (Google Drive API v3, Google Tasks API v1, Gmail API v1, Google Sheets API v4, Google Docs API v1) using OAuth 2.0 Bearer tokens (`src/lib/googleApi.ts`). The backend server never ingests, proxies, or stores user Drive files or personal OAuth credentials.
+- **Modular UI Entry Point & Decoupled AI Client (`src/main.tsx` & `src/lib/geminiApi.ts`):** `bootstrapApplication()` mounts the UI inside a `ProductionErrorBoundary` and injects an `IGeminiServiceClient` instance via `GeminiServiceProvider`. Components consume the AI service contract without coupling to raw transport or SDK internals.
+- **AI Orchestration Gateway (`server.ts`):** All `@google/genai` operations execute server-side behind verified Firebase ID tokens (`requireFirebaseAuth`), sliding-window rate limiting, strict `ResponseSchema` enforcement, safety filter handling, and multi-model exponential backoff (`gemini-3.8-flash` → `gemini-3.1-flash-lite` → `gemini-flash-latest` → deterministic heuristic fallback).
 
-- **Client-side Google Workspace access:** the browser talks directly to Google Drive, Google Tasks, and Gmail using OAuth scopes granted through Firebase Auth
-- **Server-side AI orchestration:** the Express server handles all Gemini calls and keeps `GEMINI_API_KEY` off the client
+---
 
-Key backend behaviors:
+## Prerequisites
 
-- Firebase ID tokens are required for `/api/gemini/*`
-- Gemini routes are rate limited
-- AI routes use resilient retries and model fallback
-- The server listens on `0.0.0.0:3000`
+- **Node.js:** `>= 22.0.0` (LTS recommended)
+- **npm:** `>= 10.0.0`
+- **Google Gemini API Key:** Issued from Google AI Studio
+- **Firebase Project:** Configured with Google Auth provider and enabled Google Workspace APIs (Drive, Tasks, Gmail, Docs, Sheets)
 
-## Main areas of the app
+---
 
-The UI is organized into seven main tabs:
+## Local Setup & Development
 
-1. **Browser** — inspect and manage Google Drive files
-2. **Smart Rules** — analyze files and generate organization plans
-3. **Scheduled Jobs** — configure and review backup jobs
-4. **Reminders & Deadlines** — manage Google Tasks and reminders
-5. **Activity Visualizer** — review activity and export reports
-6. **Wallpaper Generator** — create AI-generated images
-7. **AI Assistant** — multi-role Gemini chat
+### 1. Install Dependencies
 
-## Tech stack
-
-- React
-- TypeScript
-- Vite
-- Express
-- Firebase Auth / Firebase Admin
-- Google Drive API v3
-- Google Tasks API v1
-- Gmail API
-- `@google/genai`
-- Tailwind CSS v4
-
-## Getting started
-
-### Prerequisites
-
-- A current Node.js LTS release
-- npm
-- A Firebase project configured for Google sign-in
-- Google Cloud access for Drive, Tasks, and Gmail APIs
-- A Gemini API key
-
-### Installation
+Use `npm ci` for deterministic lockfile installation (or `npm install` when updating packages):
 
 ```bash
-npm install
+npm ci
 ```
 
-### Environment
+### 2. Configure Environment Variables
 
-Create a `.env` file and set:
+Copy the template and populate your runtime secrets:
 
-```env
-GEMINI_API_KEY=your_gemini_api_key
-APP_URL=http://localhost:3000
-FIREBASE_PROJECT_ID=your_firebase_project_id
+```bash
+cp .env.example .env
 ```
 
-Before running locally, make sure the repository's Firebase client configuration file contains the correct web app settings for your Firebase project so browser-based sign-in can succeed.
+Required variables in `.env`:
 
-For local server-side Firebase ID token verification, also provide Firebase Admin application default credentials, such as `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account key file or another environment that supports `applicationDefault()`.
+| Variable | Scope | Format / Example | Description |
+| :--- | :--- | :--- | :--- |
+| `GEMINI_API_KEY` | Server | `AIzaSy...` | Google Gemini API key (never exposed to client bundle) |
+| `FIREBASE_PROJECT_ID` | Server | `gen-lang-client-0910713313` | Firebase project ID for verifying client ID tokens |
+| `PORT` | Server | `3000` | HTTP server listening port (binds to `0.0.0.0`) |
+| `NODE_ENV` | Server | `development` \| `production` | Runtime environment mode |
+| `APP_URL` | Server | `http://localhost:3000` | Canonical application origin URL |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Server | `/path/to/service-account.json` | Optional local ADC path for Firebase Admin verification |
+| `VITE_API_BASE_URL` | Client | `""` or `https://api.example.com` | Optional API origin override when hosting UI separately |
 
-### Run locally
+Ensure `firebase-applet-config.json` contains your Firebase Web App configuration for browser sign-in.
+
+### 3. Run in Development Mode
+
+Starts the Express server with Vite HMR/middleware mounted on `http://0.0.0.0:3000`:
 
 ```bash
 npm run dev
 ```
 
-This starts the local full-stack development server for the app.
+### 4. Lint, Test & Build for Production
 
-Open:
+```bash
+# Run strict TypeScript type-checking
+npm run lint
 
-```text
-http://localhost:3000
+# Run automated unit and schema contract tests
+npm test
+
+# Build optimized Vite client bundle (dist/) and standalone server bundle (dist/server.cjs)
+npm run build
+
+# Start the compiled production server on http://0.0.0.0:3000
+npm start
 ```
 
-## Available scripts
+---
 
-- `npm run dev`
-- `npm run lint`
-- `npm run build`
-- `npm run start`
-- `npm run clean`
+## Containerization (Docker)
 
-## API routes
+A multi-stage `Dockerfile` is included for standalone container builds, Cloud Run, or Kubernetes deployments.
 
-- `GET /api/health`
-- `POST /api/gemini/analyze`
-- `POST /api/gemini/organize-plan`
-- `POST /api/gemini/compose-report`
-- `POST /api/gemini/file-summary`
-- `POST /api/gemini/generate-image`
-- `POST /api/gemini/chat`
+### Build the Production Image
 
-## Project structure
-
-```text
-src/
-  components/    UI features
-  lib/           browser-side Firebase, Google Workspace, and authenticated fetch helpers
-  types.ts       shared app contracts
-server.ts        Express server and Gemini endpoints
+```bash
+docker build -t drive-organizer:latest .
 ```
 
-## Security notes
+### Run the Container
 
-- Do not expose `GEMINI_API_KEY` to the browser
-- Keep Gemini requests behind verified Firebase identity
-- Treat Google OAuth access as browser-session credentials only
-- Preserve payload limits and rate limiting on Gemini routes
+```bash
+docker run --rm -p 3000:3000 \
+  -e NODE_ENV=production \
+  -e PORT=3000 \
+  -e GEMINI_API_KEY="your_gemini_api_key" \
+  -e FIREBASE_PROJECT_ID="gen-lang-client-0910713313" \
+  -e APP_URL="http://localhost:3000" \
+  drive-organizer:latest
+```
+
+### Verify Container Health
+
+```bash
+curl -s http://localhost:3000/api/health
+# Expected: {"status":"ok","timestamp":"...","service":"drive-organizer"}
+```
+
+---
+
+## Project Structure
+
+```text
+├── Dockerfile                    # Multi-stage Node 22 Alpine production container build
+├── .dockerignore                 # Excludes node_modules, .env, and build artifacts from Docker context
+├── .env.example                  # Documented environment variable template
+├── package.json                  # Exact locked dependencies and build/lint/test/start scripts
+├── server.ts                     # Express AI orchestration gateway & static asset server
+├── src/
+│   ├── main.tsx                  # Modular production entry point with DI & ErrorBoundary
+│   ├── App.tsx                   # Primary application shell and workspace state coordinator
+│   ├── types.ts                  # Canonical shared TypeScript interfaces
+│   ├── components/               # Responsive, WCAG 2.1 AA compliant UI feature modules
+│   └── lib/
+│       ├── geminiApi.ts          # Decoupled IGeminiServiceClient, provider, and auth transport
+│       ├── googleApi.ts          # Direct client-side Google Workspace OAuth & REST operations
+│       ├── decisionEngine.ts     # Deterministic file classification & triage engine
+│       ├── prompts.ts            # Enforced Gemini JSON ResponseSchemas & TypeScript contracts
+│       └── __tests__/
+│           └── production.test.ts # Automated CI verification test suite
+```

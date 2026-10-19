@@ -63,30 +63,21 @@ export default function App() {
   // File states loaded from google drive API with localized safety simulation fallbacks
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
-
-  // Real-time search query for Explorer Storage subheader filter
-  const [storageSearchQuery, setStorageSearchQuery] = useState("");
+  const [workspaceAsyncState, setWorkspaceAsyncState] = useState<{
+    status: "idle" | "loading" | "success" | "empty" | "failed";
+    message: string | null;
+    retryFn: (() => Promise<void>) | null;
+  }>({ status: "idle", message: null, retryFn: null });
 
   // Filters the 'files' array in real-time as the user types (strictly deduplicated)
   const filteredDriveFiles = React.useMemo(() => {
-    const raw = !storageSearchQuery.trim()
-      ? files
-      : files.filter(f => {
-          const q = storageSearchQuery.toLowerCase().trim();
-          const nameMatch = f.name.toLowerCase().includes(q);
-          const mimeMatch = f.mimeType ? f.mimeType.toLowerCase().includes(q) : false;
-          const categoryMatch = f.category ? f.category.toLowerCase().includes(q) : false;
-          const tagsMatch = f.tags ? f.tags.some(t => t.toLowerCase().includes(q)) : false;
-          return nameMatch || mimeMatch || categoryMatch || tagsMatch;
-        });
-
     const seen = new Set<string>();
-    return raw.filter(f => {
+    return files.filter(f => {
       if (!f?.id || seen.has(f.id)) return false;
       seen.add(f.id);
       return true;
     });
-  }, [files, storageSearchQuery]);
+  }, [files]);
 
   // Active navigation tab
   const [activeTab, setActiveTab] = useState<string>("drive");
@@ -129,7 +120,8 @@ export default function App() {
   // Modal and Approval states
   const [isScheduleReminderModalOpen, setIsScheduleReminderModalOpen] = useState(false);
   const [scheduleReminderFile, setScheduleReminderFile] = useState<DriveFile | null>(null);
-  const [pendingEmailApproval, setPendingEmailApproval] = useState<EmailApprovalRequest | null>(null);
+  // H-01: Use a FIFO queue for email approvals to prevent overwrites
+  const [pendingEmailApprovals, setPendingEmailApprovals] = useState<EmailApprovalRequest[]>([]);
   const [isSendingApprovedEmail, setIsSendingApprovedEmail] = useState(false);
 
   // Injected Smart classification results from Gemini organization core
@@ -246,14 +238,21 @@ export default function App() {
 
   // Perform OAuth logout flow
   const handleLogout = async () => {
+    setWorkspaceAsyncState({ status: "loading", message: "Signing out of Google Workspace...", retryFn: null });
     try {
        await logout();
        setUser(null);
        setToken(null);
        setFiles([]);
        setNeedsAuth(true);
-    } catch (err) {
+       setWorkspaceAsyncState({ status: "idle", message: null, retryFn: null });
+    } catch (err: any) {
        console.error(err);
+       setWorkspaceAsyncState({
+         status: "failed",
+         message: `Sign-out failed: ${err?.message || "Unable to terminate session."}`,
+         retryFn: handleLogout
+       });
     }
   };
 
@@ -261,6 +260,11 @@ export default function App() {
   const loadDriveContents = async (accessToken: string) => {
     if (!accessToken) return;
     setIsSyncing(true);
+    setWorkspaceAsyncState({
+      status: "loading",
+      message: "Synchronising Google Drive inventory...",
+      retryFn: null
+    });
     try {
       const driveItems = await listDriveFiles(accessToken);
       const seen = new Set<string>();
@@ -286,12 +290,27 @@ export default function App() {
           }
         });
         setFilesInPlan(prev => ({ ...seedPlan, ...prev }));
+        setWorkspaceAsyncState({
+          status: "success",
+          message: `Synchronised ${classified.length} Google Drive item(s) successfully.`,
+          retryFn: null
+        });
       } else {
         loadFallbackFiles();
+        setWorkspaceAsyncState({
+          status: "empty",
+          message: "No live Google Drive files found in root; loaded sample workspace catalog.",
+          retryFn: () => loadDriveContents(accessToken)
+        });
       }
     } catch (err: any) {
       console.warn("Could not list Drive items directly, loading workspace fallbacks:", err.message);
       loadFallbackFiles();
+      setWorkspaceAsyncState({
+        status: "failed",
+        message: `Google Drive sync error (${err.message || "Network or token error"}). Displaying offline fallback catalog.`,
+        retryFn: () => loadDriveContents(accessToken)
+      });
     } finally {
       setIsSyncing(false);
     }
@@ -457,9 +476,27 @@ export default function App() {
   const handleHeaderFileDrop = async (droppedFiles: FileList) => {
     if (!token) {
       addLog("email", "Please connect to Google Drive before dropping files to upload.");
+      setWorkspaceAsyncState({
+        status: "failed",
+        message: "Upload blocked: Please connect your Google Drive account before uploading files.",
+        retryFn: null
+      });
+      return;
+    }
+    if (droppedFiles.length === 0) {
+      setWorkspaceAsyncState({
+        status: "empty",
+        message: "No files were detected in the drop payload.",
+        retryFn: null
+      });
       return;
     }
     setIsSyncing(true);
+    setWorkspaceAsyncState({
+      status: "loading",
+      message: `Uploading ${droppedFiles.length} file(s) to Google Drive...`,
+      retryFn: null
+    });
     let count = 0;
     try {
       for (let i = 0; i < droppedFiles.length; i++) {
@@ -469,9 +506,19 @@ export default function App() {
       }
       addLog("create", `Uploaded ${count} file(s) via Contextual Toolbar.`);
       await loadDriveContents(token);
+      setWorkspaceAsyncState({
+        status: "success",
+        message: `Successfully uploaded ${count} file(s) to Google Drive.`,
+        retryFn: null
+      });
     } catch (err: any) {
       console.error("Header file drop upload error:", err);
       addLog("create", `Upload failed: ${err.message || 'Network error'}`);
+      setWorkspaceAsyncState({
+        status: "failed",
+        message: `File upload failed (${count}/${droppedFiles.length} completed): ${err.message || "Network error"}`,
+        retryFn: () => handleHeaderFileDrop(droppedFiles)
+      });
     } finally {
       setIsSyncing(false);
     }
@@ -547,7 +594,7 @@ export default function App() {
       setActiveAlert(prev => prev && prev.title === title ? null : prev);
     }, 6000);
 
-    // Try play simple system beep
+    // M-01: Ensure AudioContext is closed to prevent resource exhaustion
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const osc = audioCtx.createOscillator();
@@ -559,6 +606,9 @@ export default function App() {
       gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
       osc.start();
       osc.stop(audioCtx.currentTime + 0.15);
+      osc.onended = () => {
+        audioCtx.close().catch(() => {});
+      };
     } catch (e) {
       // AudioContext sandbox errors are bypassed safely
     }
@@ -633,34 +683,66 @@ export default function App() {
           </div>`,
           timestamp: new Date().toISOString()
         };
-        setPendingEmailApproval(approvalReq);
+        // H-01: Add to queue
+        setPendingEmailApprovals(prev => [...prev, approvalReq]);
         triggerNotification("Human Approval Required", `Approval requested before sending email for: "${reminder.title}".`);
         addLog("email", `Email notification awaiting human approval for: "${reminder.title}"`);
       }
 
       setReminders(prev => prev.map(r => r.id === reminder.id ? { ...r, executed: true, status: 'completed' } : r));
+      setWorkspaceAsyncState({
+        status: "success",
+        message: `Scheduled action "${reminder.title}" (${reminder.actionType}) completed.`,
+        retryFn: null
+      });
     } catch (err: any) {
       console.error("Scheduled action execution error:", err);
       addLog("modify", `Failed to execute action for "${reminder.title}": ${err.message || 'Error'}`);
       triggerNotification("Action Failed", `Could not complete scheduled action: ${err.message || 'Unknown error'}`);
+      setWorkspaceAsyncState({
+        status: "failed",
+        message: `Scheduled action "${reminder.title}" failed: ${err.message || "Unknown error"}`,
+        retryFn: () => handleExecuteReminderAction(reminder)
+      });
     }
   };
 
   const handleApproveEmail = async (req: EmailApprovalRequest) => {
     if (!token) {
       triggerNotification("Cannot Send Email", "Please connect your Google Workspace account.");
+      setWorkspaceAsyncState({
+        status: "failed",
+        message: "Cannot dispatch approved email: Google Workspace OAuth token is missing.",
+        retryFn: null
+      });
       return;
     }
     setIsSendingApprovedEmail(true);
+    setWorkspaceAsyncState({
+      status: "loading",
+      message: `Dispatching approved email to ${req.recipientEmail}...`,
+      retryFn: null
+    });
     try {
       await sendGmailReport(token, req.recipientEmail, req.subject, req.htmlBody);
       addLog("email", `Human approved email delivered to ${req.recipientEmail}`, `Subject: ${req.subject}`);
       triggerNotification("Email Delivered", `Successfully sent to ${req.recipientEmail}`);
-      setPendingEmailApproval(null);
+      // H-01: Remove head of queue
+      setPendingEmailApprovals(prev => prev.slice(1));
+      setWorkspaceAsyncState({
+        status: "success",
+        message: `Approved email "${req.subject}" delivered to ${req.recipientEmail}.`,
+        retryFn: null
+      });
     } catch (err: any) {
       console.error("Failed to send approved email:", err);
       addLog("email", `Failed to send email: ${err.message || 'Error'}`);
       triggerNotification("Email Send Failed", err.message || "Failed to dispatch email");
+      setWorkspaceAsyncState({
+        status: "failed",
+        message: `Email delivery to ${req.recipientEmail} failed: ${err.message || "Gmail API error"}`,
+        retryFn: () => handleApproveEmail(req)
+      });
     } finally {
       setIsSendingApprovedEmail(false);
     }
@@ -669,100 +751,76 @@ export default function App() {
   const handleDeclineEmail = (req: EmailApprovalRequest) => {
     addLog("email", `Email delivery declined by user: "${req.subject}"`, "Notification kept in-app only.");
     triggerNotification("Email Delivery Cancelled", "The notification was kept in-app only.");
-    setPendingEmailApproval(null);
+    setPendingEmailApprovals(prev => prev.slice(1));
   };
 
-  // Background Smart Reminder & Scheduled Action Evaluation Engine
+  // C-03: Background Smart Reminder & Scheduled Action Evaluation Engine (Pure refactor)
   useEffect(() => {
     const timer = setInterval(() => {
       const now = new Date();
       const currentDateStr = now.toISOString().slice(0, 10);
       const currentHourMin = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
+      // 1. Identify due reminders outside of state updater to prevent duplicate side-effects
+      const dueReminders: SmartTaskReminder[] = [];
       setReminders(prev => {
-        let hasChanges = false;
-        const updated = prev.map(rem => {
-          // Check if due: matches today's date (or earlier overdue date) and time
+        const updatedReminders = prev.map(rem => {
           const isDateDue = !rem.triggerDate || rem.triggerDate <= currentDateStr;
           const isTimeDue = rem.triggerTime === currentHourMin || (rem.triggerDate ? rem.triggerDate < currentDateStr : false);
-
+          
           if (rem.status === 'active' && !rem.notified && isDateDue && isTimeDue) {
-            hasChanges = true;
-
-            // 1. In-App notification
-            if (rem.notifyInApp) {
-              triggerNotification(`Scheduled Task Due: ${rem.title}`, rem.description || `Scheduled alert triggered at ${rem.triggerTime}`);
-              addLog("task", `Automated reminder alarm fired: "${rem.title}"`, `Trigger Time: ${rem.triggerTime}`);
-            }
-
-            // 2. Automated Action execution (if scheduled)
-            if (rem.actionType && rem.actionType !== 'reminder_only' && !rem.executed) {
-              handleExecuteReminderAction(rem);
-            } else if (rem.notifyEmail) {
-              // 3. MANDATORY HUMAN APPROVAL ENFORCEMENT BEFORE SENDING ANY EMAIL
-              const approvalReq: EmailApprovalRequest = {
-                id: "email_appr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-                reminderId: rem.id,
-                recipientEmail: user?.email || "Steven.lees.production@gmail.com",
-                subject: `[Drive Organizer] Reminder Due: ${rem.title}`,
-                triggerReason: `Scheduled Reminder reached at ${rem.triggerTime} (${rem.recurrence})`,
-                htmlBody: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #1e293b; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
-                  <h2 style="color: #4f46e5; margin-top: 0; font-size: 18px;">Smart Task Reminder: ${escapeHtml(rem.title)}</h2>
-                  <p style="font-size: 13px; color: #64748b; margin-bottom: 16px;">This automated notification was scheduled in your Drive Organizer workspace.</p>
-                  ${rem.description ? `<p style="font-size: 14px; color: #334155; background: #f8fafc; padding: 12px; border-radius: 8px; border-left: 3px solid #6366f1;">${escapeHtml(rem.description)}</p>` : ''}
-                  ${rem.targetFileName ? `<p style="font-size: 13px; color: #475569;"><strong>Linked Item:</strong> ${escapeHtml(rem.targetFileName)}</p>` : ''}
-                  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
-                  <p style="font-size: 11px; color: #94a3b8;">Sent via Google Workspace API · Human approval required before delivery</p>
-                </div>`,
-                timestamp: new Date().toISOString()
-              };
-              setPendingEmailApproval(approvalReq);
-              triggerNotification("Human Approval Required", `Approval requested before sending email for: "${rem.title}".`);
-              addLog("email", `Email notification awaiting human approval for: "${rem.title}"`);
-            }
-
-            // 4. Advance recurrence
+            dueReminders.push(rem);
+            
+            // Advance recurrence or mark fired
             if (rem.recurrence === 'daily') {
               const nextD = new Date(now.getTime() + 86400000);
-              return {
-                ...rem,
-                triggerDate: nextD.toISOString().slice(0, 10),
-                notified: false,
-                executed: false,
-                lastFiredAt: now.toISOString()
-              };
+              return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
             } else if (rem.recurrence === 'weekly') {
               const nextD = new Date(now.getTime() + 7 * 86400000);
-              return {
-                ...rem,
-                triggerDate: nextD.toISOString().slice(0, 10),
-                notified: false,
-                executed: false,
-                lastFiredAt: now.toISOString()
-              };
+              return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
             } else if (rem.recurrence === 'monthly') {
               const nextD = new Date(now);
               nextD.setMonth(nextD.getMonth() + 1);
-              return {
-                ...rem,
-                triggerDate: nextD.toISOString().slice(0, 10),
-                notified: false,
-                executed: false,
-                lastFiredAt: now.toISOString()
-              };
+              return { ...rem, triggerDate: nextD.toISOString().slice(0, 10), notified: false, executed: false, lastFiredAt: now.toISOString() };
             } else {
-              return {
-                ...rem,
-                status: 'fired',
-                notified: true,
-                executed: true,
-                lastFiredAt: now.toISOString()
-              };
+              return { ...rem, status: 'fired', notified: true, executed: true, lastFiredAt: now.toISOString() };
             }
           }
           return rem;
         });
-        return hasChanges ? updated : prev;
+        return updatedReminders;
+      });
+
+      // 2. Dispatch side effects for identified due reminders
+      dueReminders.forEach(rem => {
+        if (rem.notifyInApp) {
+          triggerNotification(`Scheduled Task Due: ${rem.title}`, rem.description || `Scheduled alert triggered at ${rem.triggerTime}`);
+          addLog("task", `Automated reminder alarm fired: "${rem.title}"`, `Trigger Time: ${rem.triggerTime}`);
+        }
+
+        if (rem.actionType && rem.actionType !== 'reminder_only' && !rem.executed) {
+          handleExecuteReminderAction(rem);
+        } else if (rem.notifyEmail) {
+          const approvalReq: EmailApprovalRequest = {
+            id: "email_appr_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+            reminderId: rem.id,
+            recipientEmail: user?.email || "Steven.lees.production@gmail.com",
+            subject: `[Drive Organizer] Reminder Due: ${rem.title}`,
+            triggerReason: `Scheduled Reminder reached at ${rem.triggerTime} (${rem.recurrence})`,
+            htmlBody: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #1e293b; background: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0;">
+              <h2 style="color: #4f46e5; margin-top: 0; font-size: 18px;">Smart Task Reminder: ${escapeHtml(rem.title)}</h2>
+              <p style="font-size: 13px; color: #64748b; margin-bottom: 16px;">This automated notification was scheduled in your Drive Organizer workspace.</p>
+              ${rem.description ? `<p style="font-size: 14px; color: #334155; background: #f8fafc; padding: 12px; border-radius: 8px; border-left: 3px solid #6366f1;">${escapeHtml(rem.description)}</p>` : ''}
+              ${rem.targetFileName ? `<p style="font-size: 13px; color: #475569;"><strong>Linked Item:</strong> ${escapeHtml(rem.targetFileName)}</p>` : ''}
+              <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+              <p style="font-size: 11px; color: #94a3b8;">Sent via Google Workspace API · Human approval required before delivery</p>
+            </div>`,
+            timestamp: new Date().toISOString()
+          };
+          setPendingEmailApprovals(prev => [...prev, approvalReq]);
+          triggerNotification("Human Approval Required", `Approval requested before sending email for: "${rem.title}".`);
+          addLog("email", `Email notification awaiting human approval for: "${rem.title}"`);
+        }
       });
     }, 10000);
 
@@ -795,24 +853,38 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white antialiased">
+      {/* Keyboard Skip Navigation Link (WCAG 2.1 AA) */}
+      <a
+        href="#main-dashboard-scroll"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:bg-indigo-600 focus:px-4 focus:py-2 focus:text-xs focus:font-semibold focus:text-white focus:shadow-lg"
+      >
+        Skip to main workspace content
+      </a>
+
       {/* Onboarding Flow Overlay */}
       {!needsAuth && !hasSeenOnboarding && (
         <Onboarding onComplete={completeOnboarding} />
       )}
 
-      {/* Dynamic alarm/reminder banners display overlay */}
+      {/* Dynamic alarm/reminder banners display overlay — 8px Grid Aligned */}
       {activeAlert && (
-        <div className="fixed top-4 right-4 z-50 max-w-sm w-full bg-slate-900 text-slate-100 rounded-2xl border border-indigo-500 p-4.5 shadow-2xl flex items-start gap-3.5 animate-in fade-in slide-in-from-top-6 duration-300">
-          <div className="h-8 w-8 flex items-center justify-center rounded-lg bg-indigo-500 text-white shrink-0">
-            <Bell className="h-4.5 w-4.5 stroke-[2]" />
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="fixed top-4 right-4 z-50 max-w-sm w-[calc(100vw-2rem)] sm:w-full bg-slate-900 text-slate-100 rounded-2xl border border-indigo-500 p-4 shadow-2xl flex items-start gap-4 animate-in fade-in slide-in-from-top-6 duration-300"
+        >
+          <div className="h-8 w-8 flex items-center justify-center rounded-lg bg-indigo-600 text-white shrink-0">
+            <Bell className="h-4 w-4 stroke-[2]" aria-hidden="true" />
           </div>
-          <div className="flex-1 space-y-0.5">
+          <div className="flex-1 space-y-1 min-w-0">
             <span className="font-display font-bold text-sm block tracking-tight text-white">{activeAlert.title}</span>
-            <p className="text-xs text-slate-300 leading-normal">{activeAlert.message}</p>
+            <p className="text-xs text-slate-200 leading-normal break-words">{activeAlert.message}</p>
           </div>
           <button 
+            type="button"
+            aria-label="Dismiss alert notification"
             onClick={() => setActiveAlert(null)} 
-            className="rounded p-1 hover:bg-slate-800 text-slate-400"
+            className="rounded-lg p-2 hover:bg-slate-800 active:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
           >
             ✕
           </button>
@@ -830,7 +902,7 @@ export default function App() {
       {needsAuth ? (
         <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-[#080d1a] text-slate-900 dark:text-slate-100 relative overflow-hidden">
           {/* Ambient background glow */}
-          <div className="absolute inset-0 ambient-glow pointer-events-none"></div>
+          <div className="absolute inset-0 ambient-glow pointer-events-none" aria-hidden="true"></div>
 
           <Header 
             user={user} 
@@ -843,48 +915,50 @@ export default function App() {
             isDarkMode={isDarkMode}
             toggleTheme={toggleTheme}
           />
-          <main className="flex-1 flex items-center justify-center p-6 relative z-10">
-            <div className="w-full max-w-md glass-panel rounded-3xl p-8 sm:p-10 space-y-7 text-center shadow-xl ring-1 ring-slate-200/80 dark:ring-slate-800/80">
+          <main id="main-dashboard-scroll" className="flex-1 flex items-center justify-center p-4 sm:p-6 md:p-8 relative z-10">
+            <div className="w-full max-w-md glass-panel rounded-3xl p-6 sm:p-8 md:p-10 space-y-6 text-center shadow-xl ring-1 ring-slate-200/80 dark:ring-slate-800/80">
               {/* Intelligent AI Hologram Icon Lockup */}
               <div className="flex flex-col items-center gap-4">
                 <div className="relative flex items-center justify-center">
-                  <div className="absolute inset-0 rounded-2xl bg-indigo-500/20 blur-xl"></div>
+                  <div className="absolute inset-0 rounded-2xl bg-indigo-500/20 blur-xl" aria-hidden="true"></div>
                   <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 text-white shadow-lg ring-1 ring-white/30">
-                    <Layers className="h-7 w-7" />
+                    <Layers className="h-7 w-7" aria-hidden="true" />
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
+                <div className="space-y-2">
                   <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100 font-display">
                     Drive Organizer
                   </h1>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto leading-relaxed">
+                  <p className="text-xs text-slate-600 dark:text-slate-300 max-w-xs mx-auto leading-relaxed">
                     AI-native companion for autonomous filing, smart tagging, scheduled backups, and Google Workspace intelligence.
                   </p>
                 </div>
               </div>
 
               {/* Feature capability highlights with Zero-Pill unboxed typography */}
-              <div className="pt-1 pb-1 border-y border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-center gap-2 flex-wrap">
+              <div className="py-2 border-y border-slate-200/80 dark:border-slate-800/80 text-xs text-slate-600 dark:text-slate-300 flex items-center justify-center gap-2 flex-wrap">
                 <span>Smart Categorization</span>
-                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+                <span aria-hidden="true" className="text-slate-400 dark:text-slate-600">·</span>
                 <span>Scheduled Sync</span>
-                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+                <span aria-hidden="true" className="text-slate-400 dark:text-slate-600">·</span>
                 <span>Google Sheets</span>
-                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">·</span>
+                <span aria-hidden="true" className="text-slate-400 dark:text-slate-600">·</span>
                 <span>Gemini Assistant</span>
               </div>
 
-              <div className="pt-1 flex flex-col items-center">
+              <div className="pt-2 flex flex-col items-center">
                 <button 
                   id="gsi-login-button"
+                  type="button"
                   onClick={handleLogin}
                   disabled={isLoggingIn}
-                  className="gsi-material-button hover:shadow-md transition active:scale-98 cursor-pointer"
+                  aria-busy={isLoggingIn}
+                  className="gsi-material-button hover:shadow-md transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <div className="gsi-material-button-state"></div>
                   <div className="gsi-material-button-content-wrapper">
-                    <div className="gsi-material-button-icon">
+                    <div className="gsi-material-button-icon" aria-hidden="true">
                       <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" style={{ display: "block" }}>
                         <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
                         <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
@@ -898,19 +972,19 @@ export default function App() {
                 </button>
                 
                 {isLoggingIn && (
-                  <div className="flex items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-400 font-mono mt-3">
-                    <RefreshCw className="h-3 w-3 animate-spin" /> Authenticating Workspace session...
+                  <div role="status" aria-live="polite" className="flex items-center gap-2 text-xs text-indigo-700 dark:text-indigo-300 font-mono mt-4">
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> Authenticating Workspace session...
                   </div>
                 )}
 
                 {authNotice && (
-                  <div className="rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 p-3 text-xs text-amber-800 dark:text-amber-300 mt-3 text-left">
+                  <div role="alert" className="rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 p-4 text-xs text-amber-900 dark:text-amber-200 mt-4 text-left">
                     {authNotice}
                   </div>
                 )}
               </div>
 
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 pt-3 border-t border-slate-100 dark:border-slate-800/80">
+              <p className="text-[11px] text-slate-600 dark:text-slate-400 pt-4 border-t border-slate-200/80 dark:border-slate-800/80">
                 Direct client-side OAuth · Tokens remain in ephemeral memory · Zero remote file caching
               </p>
             </div>
@@ -939,12 +1013,12 @@ export default function App() {
             hasPlan={Object.keys(filesInPlan).length > 0}
           />
 
-          {/* MAIN VIEW CONTAINER */}
-          <main id="main-dashboard-scroll" className="flex-1 p-3.5 sm:p-6 md:p-8 overflow-y-auto pb-8">
-              <div className="max-w-6xl w-full mx-auto space-y-4 sm:space-y-6">
+          {/* MAIN VIEW CONTAINER — 8px Grid System (p-4 = 16px on 375px mobile, md:p-6 = 24px on 768px tablet, xl:p-8 = 32px on 1280px+ desktop) */}
+          <main id="main-dashboard-scroll" className="flex-1 p-4 md:p-6 xl:p-8 overflow-y-auto">
+              <div className="max-w-7xl w-full mx-auto space-y-4 md:space-y-6">
                 
-                {/* CALM VIEW HEADER */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3 pb-3 sm:pb-4 border-b border-slate-200/70 dark:border-slate-800">
+                {/* CALM VIEW HEADER — 8px Grid Aligned */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200/80 dark:border-slate-800">
                   <AnimatePresence mode="wait" initial={false}>
                     <motion.div
                       key={`view-header-${activeTab}`}
@@ -952,6 +1026,7 @@ export default function App() {
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -6 }}
                       transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                      className="space-y-1"
                     >
                       <h1 className="text-base sm:text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-100">
                         {activeTab === "drive" && "Google Drive"}
@@ -962,7 +1037,7 @@ export default function App() {
                         {activeTab === "reports" && "Activity Reports"}
                         {activeTab === "chat" && "Gemini Assistant"}
                       </h1>
-                      <p className="hidden sm:block text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                      <p className="text-xs text-slate-600 dark:text-slate-400">
                         {activeTab === "drive" && "Browse, preview, search, and manage files in your connected Drive."}
                         {activeTab === "sheets" && "Inspect sheets, edit cell values inline, and export drive inventories."}
                         {activeTab === "organizer" && "Plan and execute folder organization using custom rules and AI assistance."}
@@ -974,39 +1049,93 @@ export default function App() {
                     </motion.div>
                   </AnimatePresence>
 
-                  <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 self-end sm:self-auto">
+                  <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
                     {activeTab === "drive" && (
-                      <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400 mr-1">
+                      <span className="text-xs font-mono tabular-nums text-slate-600 dark:text-slate-400 mr-2">
                         {files.length} {files.length === 1 ? "file" : "files"}
                       </span>
                     )}
 
                     {(activeTab === "drive" || activeTab === "organizer") && (
                       <button
+                        type="button"
+                        aria-pressed={showNeuralTopology}
                         onClick={() => setShowNeuralTopology(!showNeuralTopology)}
-                        className={`hidden sm:inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition cursor-pointer ${
+                        className={`hidden sm:inline-flex items-center gap-2 rounded-lg border px-3 py-2 min-h-[36px] text-xs font-medium transition-all cursor-pointer active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
                           showNeuralTopology
-                            ? "border-indigo-500/40 bg-indigo-50/70 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 dark:border-indigo-500/30"
-                            : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700"
+                            ? "border-indigo-500/50 bg-indigo-50/90 text-indigo-800 dark:bg-indigo-950/50 dark:text-indigo-200 dark:border-indigo-500/40"
+                            : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
                         }`}
                         title="Toggle Generative Neural Drive Topology"
                       >
-                        <Cpu className="h-3.5 w-3.5 text-indigo-500" />
+                        <Cpu className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" aria-hidden="true" />
                         <span>Topology {showNeuralTopology ? "On" : "Off"}</span>
                       </button>
                     )}
 
                     <button
                       id="btn-sync-drive-top"
+                      type="button"
                       onClick={handleManualRefresh}
                       disabled={isSyncing}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 sm:px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition cursor-pointer"
+                      aria-busy={isSyncing}
+                      className="inline-flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 min-h-[36px] text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 active:scale-95 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                     >
-                      <RefreshCw className={`h-3.5 w-3.5 text-slate-500 dark:text-slate-400 ${isSyncing ? 'animate-spin text-indigo-500' : ''}`} />
+                      <RefreshCw className={`h-3.5 w-3.5 text-slate-600 dark:text-slate-400 ${isSyncing ? 'animate-spin text-indigo-600 dark:text-indigo-400' : ''}`} aria-hidden="true" />
                       <span>{isSyncing ? "Syncing..." : "Refresh"}</span>
                     </button>
                   </div>
                 </div>
+
+                {/* Inline Workspace Async Status & Retry Feedback Banner */}
+                {workspaceAsyncState.status !== "idle" && workspaceAsyncState.message && (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className={`rounded-xl border p-4 text-xs flex flex-wrap items-center justify-between gap-4 transition-all ${
+                      workspaceAsyncState.status === "failed"
+                        ? "border-rose-300 dark:border-rose-800/80 bg-rose-50 dark:bg-rose-950/40 text-rose-900 dark:text-rose-200"
+                        : workspaceAsyncState.status === "loading"
+                        ? "border-indigo-300 dark:border-indigo-800/80 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-200"
+                        : workspaceAsyncState.status === "empty"
+                        ? "border-amber-300 dark:border-amber-800/80 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200"
+                        : "border-emerald-300 dark:border-emerald-800/80 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      {workspaceAsyncState.status === "loading" && <RefreshCw className="h-4 w-4 animate-spin shrink-0 text-indigo-600 dark:text-indigo-400" aria-hidden="true" />}
+                      {workspaceAsyncState.status === "failed" && <AlertTriangle className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" aria-hidden="true" />}
+                      {workspaceAsyncState.status === "empty" && <Info className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />}
+                      {workspaceAsyncState.status === "success" && <Check className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />}
+                      <span className="font-mono uppercase text-[10px] font-semibold px-2 py-0.5 rounded bg-black/5 dark:bg-white/10 shrink-0">
+                        {workspaceAsyncState.status}
+                      </span>
+                      <span className="truncate font-medium">{workspaceAsyncState.message}</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {workspaceAsyncState.retryFn && (
+                        <button
+                          type="button"
+                          onClick={() => workspaceAsyncState.retryFn?.()}
+                          disabled={isSyncing}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white px-3 py-1.5 text-xs font-semibold shadow-2xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                        >
+                          <RefreshCw className={`h-3.5 w-3.5 ${isSyncing ? "animate-spin" : ""}`} aria-hidden="true" />
+                          <span>Retry Now</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setWorkspaceAsyncState({ status: "idle", message: null, retryFn: null })}
+                        aria-label="Dismiss status notice"
+                        className="p-2 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition cursor-pointer"
+                        title="Dismiss status notice"
+                      >
+                        <X className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Generative Neural Drive Synapse Canvas (Desktop Power Feature) */}
                 <AnimatePresence>
@@ -1019,19 +1148,18 @@ export default function App() {
                       transition={{ duration: 0.22, ease: "easeInOut" }}
                       className="hidden md:block"
                     >
-                    {/* <NeuralSynapseCanvas 
-                        files={files} 
-                        isSyncing={isSyncing} 
-                        filesInPlan={filesInPlan} 
-                      /> */}
                     </motion.div>
                   )}
                 </AnimatePresence>
 
-                {/* ACTIVE TAB SCREEN WITH FRAMER-MOTION TRANSITION */}
+                {/* ACTIVE TAB SCREEN WITH FRAMER-MOTION TRANSITION & TABPANEL SEMANTICS */}
                 <AnimatePresence mode="wait" initial={false}>
                   <motion.div
                     key={`view-content-${activeTab}`}
+                    id={`panel-${activeTab}`}
+                    role="tabpanel"
+                    aria-labelledby={`nav-btn-${activeTab}`}
+                    tabIndex={0}
                     initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
@@ -1039,7 +1167,7 @@ export default function App() {
                       duration: 0.22, 
                       ease: [0.16, 1, 0.3, 1] 
                     }}
-                    className="w-full"
+                    className="w-full focus:outline-none"
                   >
                     {activeTab === "drive" && (
                       <DriveBrowser 
@@ -1099,7 +1227,7 @@ export default function App() {
                         files={files}
                         onOpenScheduleModal={handleOpenScheduleModal}
                         onExecuteReminderAction={handleExecuteReminderAction}
-                        onEmailApprovalRequest={(req) => setPendingEmailApproval(req)}
+                        onEmailApprovalRequest={(req) => setPendingEmailApprovals(prev => [...prev, req])}
                       />
                     )}
 
@@ -1139,7 +1267,7 @@ export default function App() {
 
       {/* Mandatory Human Email Approval Security Modal */}
       <EmailApprovalModal
-        request={pendingEmailApproval}
+        request={pendingEmailApprovals[0] || null}
         onApprove={handleApproveEmail}
         onDecline={handleDeclineEmail}
         isSending={isSendingApprovedEmail}

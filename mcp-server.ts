@@ -15,6 +15,9 @@ dotenv.config();
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GOOGLE_ACCESS_TOKEN = process.env.GOOGLE_ACCESS_TOKEN;
 
+// C-01: In-memory store for pending emails awaiting human approval
+const pendingEmails = new Map<string, { to: string; subject: string; htmlBody: string; expiry: number }>();
+
 if (!GEMINI_API_KEY) {
   console.warn("Warning: GEMINI_API_KEY not found in environment. AI tools will fail.");
 }
@@ -192,8 +195,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
-        name: "send_email",
-        description: "Send an HTML email via Gmail API. MANDATORY: Ensure user has approved the content.",
+        name: "stage_email_for_approval",
+        description: "Stage an HTML email for human approval. Returns a draft ID.",
         inputSchema: {
           type: "object",
           properties: {
@@ -202,6 +205,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             htmlBody: { type: "string", description: "HTML content of the email" },
           },
           required: ["to", "subject", "htmlBody"],
+        },
+      },
+      {
+        name: "send_approved_email",
+        description: "Send a previously staged email after human verification. Requires draftId.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            draftId: { type: "string", description: "The draft ID returned by stage_email_for_approval" },
+          },
+          required: ["draftId"],
         },
       },
       {
@@ -267,7 +281,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { q, pageSize, folderId } = (args as any) || {};
         let query = q || "trashed = false";
         if (folderId) {
-          query += ` and '${folderId}' in parents`;
+          // C-04: Query Injection Prevention (Validate folderId format)
+          const safeFolderId = String(folderId).replace(/[^a-zA-Z0-9_-]/g, "");
+          query += ` and '${safeFolderId}' in parents`;
         }
         const data = await driveFetch(`drive/v3/files?q=${encodeURIComponent(query)}&pageSize=${pageSize || 20}&fields=files(id,name,mimeType,size,parents,createdTime)`);
         return { content: [{ type: "text", text: JSON.stringify(data.files, null, 2) }] };
@@ -277,11 +293,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { fileId, mimeType } = (args as any);
         if (mimeType === "application/vnd.google-apps.document") {
           const doc = await driveFetch(`docs/v1/documents/${fileId}`);
-          // Simplified text extraction logic
+          // B-03: Guard against undefined doc structure
+          if (!doc || !doc.body?.content) {
+            return { content: [{ type: "text", text: "Error: Document has no readable content structure." }] };
+          }
           let fullText = "";
           doc.body.content.forEach((el: any) => {
             if (el.paragraph) {
-              el.paragraph.elements.forEach((pe: any) => {
+              el.paragraph.elements?.forEach((pe: any) => {
                 if (pe.textRun) fullText += pe.textRun.content;
               });
             }
@@ -388,15 +407,52 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: `Success: Created task "${data.title}" in list ${listId}` }] };
       }
 
-      case "send_email": {
+      case "stage_email_for_approval": {
         const { to, subject, htmlBody } = (args as any);
+        // C-04: Header Injection Prevention
+        const safeTo = String(to).replace(/[\r\n]/g, "").trim();
+        const safeSubject = String(subject).replace(/[\r\n]/g, "").trim();
+        
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(safeTo)) {
+          return { content: [{ type: "text", text: `Error: Invalid recipient email address: ${safeTo}` }], isError: true };
+        }
+
+        const draftId = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        pendingEmails.set(draftId, {
+          to: safeTo,
+          subject: safeSubject,
+          htmlBody,
+          expiry: Date.now() + 3600000 // 1 hour expiry
+        });
+
+        return { 
+          content: [{ 
+            type: "text", 
+            text: `Email staged successfully. Draft ID: ${draftId}\nRecipient: ${safeTo}\nSubject: ${safeSubject}\n\nWARNING: This email has NOT been sent. You MUST call 'send_approved_email' with this draftId after obtaining explicit human confirmation.` 
+          }] 
+        };
+      }
+
+      case "send_approved_email": {
+        const { draftId } = (args as any);
+        const staged = pendingEmails.get(draftId);
+
+        if (!staged) {
+          return { content: [{ type: "text", text: "Error: Staged email not found or expired." }], isError: true };
+        }
+
+        if (Date.now() > staged.expiry) {
+          pendingEmails.delete(draftId);
+          return { content: [{ type: "text", text: "Error: Staged email has expired." }], isError: true };
+        }
+
         const emailLines = [
-          `To: ${to}`,
+          `To: ${staged.to}`,
           "Content-Type: text/html; charset=utf-8",
           "MIME-Version: 1.0",
-          `Subject: ${subject}`,
+          `Subject: ${staged.subject}`,
           "",
-          htmlBody
+          staged.htmlBody
         ];
         const emailContent = emailLines.join("\r\n");
         const base64UrlEmail = Buffer.from(emailContent).toString("base64")
@@ -408,7 +464,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           method: "POST",
           body: JSON.stringify({ raw: base64UrlEmail }),
         });
-        return { content: [{ type: "text", text: `Success: Email sent to ${to}` }] };
+
+        pendingEmails.delete(draftId);
+        return { content: [{ type: "text", text: `Success: Human-approved email sent to ${staged.to}` }] };
       }
 
       case "get_spreadsheet_data": {
@@ -467,7 +525,10 @@ ${contentSnippet ? `Content Snippet: ${contentSnippet}` : ""}`;
 
       case "compose_ai_report": {
         const { actions, summary, userEmail } = (args as any);
-        const actionsText = actions.map((act: string, index: number) => `${index + 1}. ${act}`).join("\n");
+        if (!Array.isArray(actions)) {
+          return { content: [{ type: "text", text: "Error: 'actions' must be an array." }], isError: true };
+        }
+        const actionsText = actions.map((act: any, index: number) => `${index + 1}. ${String(act).slice(0, 500)}`).join("\n");
         const prompt = `Compose an executive report for ${userEmail || 'User'}.\nActions performed:\n${actionsText}\nSummary: ${summary || 'No summary provided'}`;
 
         const result = await ai.models.generateContent({
