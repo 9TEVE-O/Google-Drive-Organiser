@@ -278,7 +278,7 @@ export default function GeminiChatbot({ files, clearTrigger, exportTrigger }: Ge
 
     try {
       const sampleNames = files?.slice(0, 8).map(f => f.name) || [];
-      const res = await fetch("/api/gemini/chat-suggestions", {
+      const res = await geminiFetch("/api/gemini/chat-suggestions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

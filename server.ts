@@ -261,6 +261,7 @@ ${activeRules.map((r: any) => `- Keyword: "${r.keyword.trim()}" => Must be categ
       : "";
 
     const prompt = `Analyze these Google Drive files. Use the provided categories and decision rules to triage them appropriately.
+${rulesSection}
 <untrusted_drive_items>
 ${fileListText}
 </untrusted_drive_items>`;
@@ -765,7 +766,7 @@ app.post("/api/gemini/chat", async (req, res) => {
 /**
  * API Endpoint: Generate dynamic AI chat suggestions based on active persona and sample files
  */
-app.post("/api/gemini/chat-suggestions", apiRateLimiter, async (req, res) => {
+app.post("/api/gemini/chat-suggestions", requireFirebaseAuth, async (req, res) => {
   try {
     const { roleTitle, sampleFiles } = req.body || {};
     const filesList = Array.isArray(sampleFiles) && sampleFiles.length > 0

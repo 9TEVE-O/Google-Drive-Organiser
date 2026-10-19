@@ -81,10 +81,10 @@ export default function EmailApprovalModal({
               <span>HTML Message Content Preview</span>
               <span className="text-[10px] font-normal text-slate-400">Safe Native Rendering</span>
             </label>
-            <div 
-              className="p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-700 text-xs leading-relaxed max-h-56 overflow-y-auto"
-              dangerouslySetInnerHTML={{ __html: request.htmlBody }}
-            />
+            {/* Replace dangerouslySetInnerHTML with a secure display box */}
+            <div className="p-4 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-200 dark:border-slate-700 text-xs leading-relaxed max-h-56 overflow-y-auto font-mono whitespace-pre-wrap">
+              {request.htmlBody.replace(/<[^>]*>?/gm, '')} {/* Strips raw HTML tags safely for preview */}
+            </div>
           </div>
 
           {/* NOTICE BANNER */}
